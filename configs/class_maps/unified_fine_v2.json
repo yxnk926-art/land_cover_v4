@@ -1,0 +1,819 @@
+{
+  "taxonomy_id": "unified-fine-v2",
+  "version": 2,
+  "status": "final",
+  "description": "统一细类 v2（2026-10-30 定稿，取代 v1）：由 v1 合并 track_railway→road、sports_hard→paved_open、pasture 和 orchard→farmland，并取消 car 的重叠。每个细类在每个数据集只属于一个原生类。v1 的审计显示 car 属于两个原生类时，模型会把它当万能类，OEM 和 Global-LoveDA 的 road IoU 接近 0。其余字段含义同 v1。",
+  "sources": {
+    "openearthmap": "OpenEarthMap 补充材料 S1 Land Cover Classes，arXiv 2210.10732",
+    "flair_hub": "FLAIR #1 数据论文的类别说明，arXiv 2211.12979（FLAIR-HUB 沿用 COSIA 体系，编号见 arXiv 2506.07080 表 VI）",
+    "global_loveda": "LoveDA 附录 A.1，arXiv 2110.08733（按地理国情普查标准取 7 类，background 为其余地物）；Global-LoveDA 见 EarthVL §3.1，arXiv 2601.02783",
+    "deepglobe": "DeepGlobe 2018 §2.3 Land Cover Classification，arXiv 1805.06561",
+    "isprs_potsdam": "ISPRS 2D Semantic Labeling 说明：clutter/background 含水体及与其他类差异很大的物体（集装箱、网球场、游泳池）"
+  },
+  "datasets": [
+    "openearthmap",
+    "flair_hub",
+    "global_loveda",
+    "deepglobe",
+    "isprs_potsdam"
+  ],
+  "fine_classes": [
+    {
+      "key": "building",
+      "name": "Building",
+      "description": "Roofed constructions: residential, commercial and industrial buildings, towers, silos, water towers. Not greenhouses.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "building"
+          ],
+          "basis": "official"
+        },
+        "flair_hub": {
+          "to": [
+            "building"
+          ],
+          "basis": "official",
+          "note": "FLAIR 的 building 含塔、筒仓、水塔和坝，温室除外"
+        },
+        "global_loveda": {
+          "to": [
+            "building"
+          ],
+          "basis": "official"
+        },
+        "deepglobe": {
+          "to": [
+            "urban"
+          ],
+          "basis": "official",
+          "note": "DeepGlobe 的 urban 是人工建成区"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "building"
+          ],
+          "basis": "official"
+        }
+      }
+    },
+    {
+      "key": "greenhouse",
+      "name": "Greenhouse",
+      "description": "Greenhouses and plastic tunnels.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "building"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "agriculture land"
+          ],
+          "note": "OEM 的定义没有提到温室，暂按有顶构筑物归 building"
+        },
+        "flair_hub": {
+          "to": [
+            "greenhouse"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "background"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "agriculture",
+            "building"
+          ],
+          "note": "LoveDA 依据的地理国情普查标准把温室大棚列为构筑物，不在 6 个前景类中"
+        },
+        "deepglobe": {
+          "to": [
+            "agriculture"
+          ],
+          "basis": "inferred",
+          "alternatives": [
+            "urban"
+          ],
+          "note": "DeepGlobe 的 agriculture 含苗圃、观赏园艺和圈养设施"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "building"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "clutter"
+          ],
+          "note": "Potsdam 很少见，暂按有顶构筑物"
+        }
+      }
+    },
+    {
+      "key": "road",
+      "name": "Road and railway",
+      "description": "Carriageways and railways: streets, roads, highways, unpaved tracks, railways, airport runways and taxiways.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "road"
+          ],
+          "basis": "official"
+        },
+        "flair_hub": {
+          "to": [
+            "impervious surface"
+          ],
+          "basis": "official",
+          "note": "FLAIR 的 impervious surface 含车行道和停车场。FLAIR 把铁路和砾石路标为 pervious surface，这些像素由 construction_site 承接"
+        },
+        "global_loveda": {
+          "to": [
+            "road"
+          ],
+          "basis": "official"
+        },
+        "deepglobe": {
+          "to": [
+            "urban"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "impervious surfaces"
+          ],
+          "basis": "official"
+        }
+      }
+    },
+    {
+      "key": "car",
+      "name": "Car",
+      "description": "Cars and other road vehicles, as objects.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "road"
+          ],
+          "basis": "inferred",
+          "note": "OEM 车道上的车随道路标注；停车场上的车属 developed space，这些像素在此作为少量噪声"
+        },
+        "flair_hub": {
+          "to": [
+            "impervious surface"
+          ],
+          "basis": "official",
+          "note": "FLAIR 规定可移动物体按下垫面标注，例如路上的车标 impervious surface"
+        },
+        "global_loveda": {
+          "to": [
+            "road"
+          ],
+          "basis": "inferred",
+          "note": "路上的车随道路；停车场上的车属 background，这些像素在此作为少量噪声"
+        },
+        "deepglobe": {
+          "to": [
+            "urban"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "car"
+          ],
+          "basis": "official"
+        }
+      }
+    },
+    {
+      "key": "paved_open",
+      "name": "Other paved ground",
+      "description": "Paved open ground other than roads: parking lots, sidewalks, plazas, paved yards, hard-surface sports grounds.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "developed space"
+          ],
+          "basis": "official",
+          "note": "OEM 的 developed space 含人行道、铺装地面、步道和停车场"
+        },
+        "flair_hub": {
+          "to": [
+            "impervious surface"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "background"
+          ],
+          "basis": "inferred",
+          "note": "LoveDA 没有硬化地表类，落入兜底的 background"
+        },
+        "deepglobe": {
+          "to": [
+            "urban"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "impervious surfaces"
+          ],
+          "basis": "official",
+          "note": "ISPRS 把网球场归 clutter，这里不单独表示；Potsdam 中很少见"
+        }
+      }
+    },
+    {
+      "key": "sports_grass",
+      "name": "Grass sports pitch",
+      "description": "Sports pitches on natural grass.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "developed space"
+          ],
+          "basis": "inferred",
+          "note": "OEM 把棒球场、足球场列入 developed space；天然草皮球场是否同样处理未写明"
+        },
+        "flair_hub": {
+          "to": [
+            "herbaceous vegetation"
+          ],
+          "basis": "official",
+          "note": "FLAIR 的 herbaceous vegetation 含运动用的娱乐草地"
+        },
+        "global_loveda": {
+          "to": [
+            "background"
+          ],
+          "basis": "inferred"
+        },
+        "deepglobe": {
+          "to": [
+            "urban"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "rangeland"
+          ],
+          "note": "0.5 m 下城区内的球场多随建成区多边形标注"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "low vegetation"
+          ],
+          "basis": "inferred"
+        }
+      }
+    },
+    {
+      "key": "construction_site",
+      "name": "Construction site and pervious man-made ground",
+      "description": "Construction sites and man-made pervious ground: compacted soil, gravel lots and paths.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "developed space"
+          ],
+          "basis": "official",
+          "note": "OEM 写明施工场地和压实土属 developed space"
+        },
+        "flair_hub": {
+          "to": [
+            "pervious surface"
+          ],
+          "basis": "official",
+          "note": "FLAIR 的 pervious surface 含施工场地"
+        },
+        "global_loveda": {
+          "to": [
+            "background"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "barren"
+          ],
+          "note": "地理国情普查的“人工堆掘地”不在 6 个前景类中；也可能被标成 barren"
+        },
+        "deepglobe": {
+          "to": [
+            "urban"
+          ],
+          "basis": "inferred",
+          "alternatives": [
+            "barren"
+          ]
+        },
+        "isprs_potsdam": {
+          "to": [
+            "clutter"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "impervious surfaces"
+          ]
+        }
+      }
+    },
+    {
+      "key": "extraction_dump",
+      "name": "Quarry, mine and dump",
+      "description": "Quarries, open-pit mines, landfills and heaps of earth or material.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "bareland"
+          ],
+          "basis": "inferred",
+          "note": "OEM 的 Bareland 含“其他土石堆积物”"
+        },
+        "flair_hub": {
+          "to": [
+            "pervious surface"
+          ],
+          "basis": "official",
+          "note": "FLAIR 的 pervious surface 含采石场和垃圾填埋场"
+        },
+        "global_loveda": {
+          "to": [
+            "barren"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "background"
+          ]
+        },
+        "deepglobe": {
+          "to": [
+            "barren"
+          ],
+          "basis": "inferred",
+          "alternatives": [
+            "urban"
+          ],
+          "note": "DeepGlobe 的 barren 是无植被的土地"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "clutter"
+          ],
+          "basis": "inferred"
+        }
+      }
+    },
+    {
+      "key": "bare_natural",
+      "name": "Natural bare ground",
+      "description": "Natural bare ground: sand, beaches, rock, dry riverbeds.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "bareland"
+          ],
+          "basis": "official"
+        },
+        "flair_hub": {
+          "to": [
+            "bare soil"
+          ],
+          "basis": "official",
+          "note": "FLAIR 的 bare soil 是常年裸露的自然地表"
+        },
+        "global_loveda": {
+          "to": [
+            "barren"
+          ],
+          "basis": "inferred"
+        },
+        "deepglobe": {
+          "to": [
+            "barren"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "clutter"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "low vegetation"
+          ],
+          "note": "Potsdam 没有裸地类"
+        }
+      }
+    },
+    {
+      "key": "snow_ice",
+      "name": "Snow and ice",
+      "description": "Snow and ice.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "bareland"
+          ],
+          "basis": "inferred",
+          "note": "OEM 区域中基本没有积雪"
+        },
+        "flair_hub": {
+          "to": [
+            "snow"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "barren"
+          ],
+          "basis": "inferred"
+        },
+        "deepglobe": {
+          "to": [
+            "barren"
+          ],
+          "basis": "inferred",
+          "note": "DeepGlobe 的 unknown 指云，积雪按无植被地表处理"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "clutter"
+          ],
+          "basis": "inferred",
+          "note": "Potsdam 没有积雪"
+        }
+      }
+    },
+    {
+      "key": "water",
+      "name": "Water",
+      "description": "Water bodies: sea, rivers, lakes, ponds, reservoirs. Not swimming pools.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "water"
+          ],
+          "basis": "official"
+        },
+        "flair_hub": {
+          "to": [
+            "water"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "water"
+          ],
+          "basis": "official"
+        },
+        "deepglobe": {
+          "to": [
+            "water"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "clutter"
+          ],
+          "basis": "official",
+          "note": "ISPRS 写明水体属 clutter/background"
+        }
+      }
+    },
+    {
+      "key": "swimming_pool",
+      "name": "Swimming pool",
+      "description": "Open-air swimming pools.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "water"
+          ],
+          "basis": "official",
+          "note": "OEM 的 Water 含游泳池"
+        },
+        "flair_hub": {
+          "to": [
+            "swimming pool"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "water"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "background"
+          ]
+        },
+        "deepglobe": {
+          "to": [
+            "urban"
+          ],
+          "basis": "inferred",
+          "alternatives": [
+            "water"
+          ],
+          "note": "0.5 m 下游泳池很小，处在建成区内"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "clutter"
+          ],
+          "basis": "official"
+        }
+      }
+    },
+    {
+      "key": "herbaceous",
+      "name": "Herbaceous vegetation",
+      "description": "Herbaceous vegetation not used for agriculture: lawns, parks, golf courses, natural grassland, verges.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "rangeland"
+          ],
+          "basis": "official",
+          "note": "OEM 的 Rangeland 含未耕作、未放牧的草本和灌丛，以及花园、公园、高尔夫球场里的草和灌木"
+        },
+        "flair_hub": {
+          "to": [
+            "herbaceous vegetation"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "background"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "agriculture"
+          ],
+          "note": "LoveDA 没有草地类。优先核对：城区草坪和农区草地落在哪一类"
+        },
+        "deepglobe": {
+          "to": [
+            "rangeland"
+          ],
+          "basis": "official",
+          "note": "DeepGlobe 的 rangeland 是非林、非农的绿地和草地"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "low vegetation"
+          ],
+          "basis": "official"
+        }
+      }
+    },
+    {
+      "key": "farmland",
+      "name": "Farmland",
+      "description": "Land in agricultural use: arable crops, paddies, vegetables, pasture and mown meadows, orchards and other perennial tree crops. Not vineyards or plowed land.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "agriculture land"
+          ],
+          "basis": "official"
+        },
+        "flair_hub": {
+          "to": [
+            "agricultural land"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "agriculture"
+          ],
+          "basis": "official"
+        },
+        "deepglobe": {
+          "to": [
+            "agriculture"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "low vegetation"
+          ],
+          "basis": "inferred"
+        }
+      }
+    },
+    {
+      "key": "plowed_land",
+      "name": "Plowed land",
+      "description": "Arable land without visible vegetation: plowed or freshly harvested.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "agriculture land"
+          ],
+          "basis": "inferred"
+        },
+        "flair_hub": {
+          "to": [
+            "plowed land"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "agriculture"
+          ],
+          "basis": "inferred"
+        },
+        "deepglobe": {
+          "to": [
+            "agriculture"
+          ],
+          "basis": "inferred"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "low vegetation"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "clutter"
+          ]
+        }
+      }
+    },
+    {
+      "key": "vineyard",
+      "name": "Vineyard",
+      "description": "Vineyards.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "agriculture land"
+          ],
+          "basis": "official",
+          "note": "OEM 的 Agriculture 含果园、葡萄园等多年生木本作物"
+        },
+        "flair_hub": {
+          "to": [
+            "vineyard"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "agriculture"
+          ],
+          "basis": "inferred",
+          "note": "地理国情普查中园地属种植土地"
+        },
+        "deepglobe": {
+          "to": [
+            "agriculture"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "low vegetation"
+          ],
+          "basis": "inferred",
+          "note": "Potsdam 没有葡萄园"
+        }
+      }
+    },
+    {
+      "key": "shrub",
+      "name": "Shrub and brushwood",
+      "description": "Natural woody vegetation below about 5 m: shrubland, brushwood, young trees, moors.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "rangeland"
+          ],
+          "basis": "official",
+          "note": "OEM 的 Rangeland 含未耕作的灌丛。FLAIR 的 brushwood 还含幼树，OEM 可能把幼树标成 tree"
+        },
+        "flair_hub": {
+          "to": [
+            "brushwood"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "forest"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "background"
+          ],
+          "note": "地理国情普查的林地含灌木林"
+        },
+        "deepglobe": {
+          "to": [
+            "rangeland"
+          ],
+          "basis": "inferred",
+          "alternatives": [
+            "forest"
+          ],
+          "note": "按非林绿地；树冠密度不低于 20% 时 DeepGlobe 归 forest"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "low vegetation"
+          ],
+          "basis": "uncertain",
+          "alternatives": [
+            "tree"
+          ]
+        }
+      }
+    },
+    {
+      "key": "deciduous_tree",
+      "name": "Deciduous tree",
+      "description": "Broadleaved trees taller than about 5 m.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "tree"
+          ],
+          "basis": "official"
+        },
+        "flair_hub": {
+          "to": [
+            "deciduous"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "forest"
+          ],
+          "basis": "official"
+        },
+        "deepglobe": {
+          "to": [
+            "forest"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "tree"
+          ],
+          "basis": "official"
+        }
+      }
+    },
+    {
+      "key": "coniferous_tree",
+      "name": "Coniferous tree",
+      "description": "Coniferous trees taller than about 5 m.",
+      "map": {
+        "openearthmap": {
+          "to": [
+            "tree"
+          ],
+          "basis": "official"
+        },
+        "flair_hub": {
+          "to": [
+            "coniferous"
+          ],
+          "basis": "official"
+        },
+        "global_loveda": {
+          "to": [
+            "forest"
+          ],
+          "basis": "official"
+        },
+        "deepglobe": {
+          "to": [
+            "forest"
+          ],
+          "basis": "official"
+        },
+        "isprs_potsdam": {
+          "to": [
+            "tree"
+          ],
+          "basis": "official"
+        }
+      }
+    }
+  ]
+}
