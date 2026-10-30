@@ -29,7 +29,8 @@ class RegistryTest(unittest.TestCase):
             set(pretrained.REGISTRY),
             {"resnet50.tv_in1k", "swin_tiny_patch4_window7_224.ms_in1k",
              "ddrnet23_slim.imagenet", "mit_b2.nvidia_in1k", "mit_b0.nvidia_in1k",
-             "mobilenetv3_large_100.ra_in1k", "pidnet_s.imagenet"},
+             "mobilenetv3_large_100.ra_in1k", "pidnet_s.imagenet",
+             "deit_small_patch16_224.fb_in1k"},
         )
         for name, spec in pretrained.REGISTRY.items():
             self.assertEqual(spec.name, name)
@@ -131,6 +132,7 @@ class RealCheckpointTest(unittest.TestCase):
               MOBILENET_BN_EPS=1e-5)),
         ("mobilenetv3_large_100.ra_in1k", dict(MODEL_NAME="deeplabv3plus")),
         ("pidnet_s.imagenet", dict(MODEL_NAME="pidnet", PIDNET_VARIANT="s")),
+        ("deit_small_patch16_224.fb_in1k", dict(MODEL_NAME="segmenter")),
     )
 
     def test_registered_files_cover_their_backbones(self):

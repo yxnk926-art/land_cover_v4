@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""九个模型的统一工厂。
+"""九种模型的统一工厂。
 
 ``unet_resnet``、``unetpp_resnet``、``deeplabv3plus``+``DEEPLAB_BACKBONE``、
-``segformer``、``swin_upernet``、``mobilenetv3_lraspp``、``pidnet`` 和 ``ddrnet``。
+``segformer``、``swin_upernet``、``segmenter``、``mobilenetv3_lraspp``、``pidnet`` 和 ``ddrnet``。
 SegFormer 用 ``SEGFORMER_VARIANT`` 选 B0 或 B2。
 """
 
@@ -54,6 +54,17 @@ def build_model(cfg):
             aux_channels=getattr(cfg, "AUX_CHANNELS", 256),
         )
 
+    if name == "segmenter":
+        from .segmenter import Segmenter
+        return Segmenter(
+            num_classes=cfg.NUM_CLASSES,
+            in_channels=getattr(cfg, "IN_CHANNELS", 3),
+            variant=getattr(cfg, "SEGMENTER_VARIANT", "s16"),
+            decoder_layers=getattr(cfg, "SEGMENTER_DECODER_LAYERS", 2),
+            dropout=getattr(cfg, "MODEL_DROPOUT", 0.1),
+            drop_path_rate=getattr(cfg, "DROP_PATH_RATE", 0.1),
+        )
+
     if name == "ddrnet":
         from .ddrnet import DDRNet
         return DDRNet(
@@ -98,7 +109,7 @@ def build_model(cfg):
         )
 
     choices = (
-        "unet_resnet, unetpp_resnet, deeplabv3plus, segformer, swin_upernet, "
+        "unet_resnet, unetpp_resnet, deeplabv3plus, segformer, swin_upernet, segmenter, "
         "mobilenetv3_lraspp, pidnet, ddrnet"
     )
     raise ValueError(f"未知 MODEL_NAME: {name!r}（可选: {choices}）")

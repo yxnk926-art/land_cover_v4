@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Key conversion of the MiT, MobileNetV3 and PIDNet ImageNet releases.
+"""Key conversion of the MiT, MobileNetV3, PIDNet and DeiT ImageNet releases.
 
 Where a reference implementation is installed (timm, HF transformers), the
 converted weights must reproduce its features numerically; this proves the
@@ -16,8 +16,8 @@ from common import pretrained
 from common.models import build_model
 from common.models.mobilenetv3 import MobileNetV3Backbone
 from common.models.segformer import MixVisionTransformer, SEGFORMER_VARIANTS
-from common.pretrained import (apply_pretrained, convert_hf_mit,
-                               convert_pidnet_official, convert_timm_mobilenetv3)
+from common.pretrained import (apply_pretrained, convert_hf_mit, convert_pidnet_official,
+                               convert_timm_deit, convert_timm_mobilenetv3)
 
 try:
     import timm
@@ -188,6 +188,37 @@ class PIDNetConversionTest(unittest.TestCase):
         self.assertFalse(any(k.startswith(prefixes) for k in changed))
         self.assertTrue(any(k.startswith("layer3_p.") for k in changed))
         self.assertEqual(report["dropped_tensors"], 20)
+
+
+class DeiTConversionTest(unittest.TestCase):
+    @unittest.skipIf(timm is None, "timm is not installed")
+    def test_position_grid_matches_timm_resampling(self):
+        torch.manual_seed(0)
+        reference = timm.create_model("deit_small_patch16_224", pretrained=False, num_classes=0)
+        state = dict(reference.state_dict())
+        converted = convert_timm_deit(state)
+        expected = timm.layers.resample_abs_pos_embed(
+            reference.pos_embed, new_size=[32, 32], old_size=[14, 14], num_prefix_tokens=1,
+            interpolation="bilinear", antialias=False)
+        torch.testing.assert_close(converted["pos_embed"], expected)
+        self.assertEqual(set(converted), set(state))
+        torch.testing.assert_close(converted["blocks.11.attn.qkv.weight"],
+                                   state["blocks.11.attn.qkv.weight"])
+
+    def test_unknown_keys_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "未覆盖"):
+            convert_timm_deit({"pos_embed": torch.zeros(1, 197, 384), "dist_token": torch.zeros(1)})
+
+    def test_real_checkpoint_fills_the_encoder(self):
+        path = _file("deit_small_patch16_224.fb_in1k")
+        if path is None:
+            self.skipTest("DeiT-S checkpoint not downloaded")
+        model = build_model(_cfg(MODEL_NAME="segmenter"))
+        decoder_before = model.decode_head.cls_emb.detach().clone()
+        report = apply_pretrained(model, "deit_small_patch16_224.fb_in1k")
+        self.assertEqual(report["loaded_tensors"], 150)
+        self.assertEqual(report["dropped_tensors"], 2)
+        torch.testing.assert_close(model.decode_head.cls_emb, decoder_before)
 
 
 if __name__ == "__main__":

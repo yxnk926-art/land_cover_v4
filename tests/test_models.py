@@ -9,6 +9,7 @@ from common.engine import SegLoss, build_optimizer, primary_logits
 from common.models import build_model
 from common.models.mobilenetv3 import MobileNetV3Backbone
 from common.models.resnet import ResNetBackbone
+from common.models.segmenter import POS_GRID, resize_pos_embed
 
 
 def _cfg(**kwargs):
@@ -106,6 +107,84 @@ class AuxiliaryHeadModelsTest(unittest.TestCase):
         self.assertTrue(all(id(p) in no_decay for p in tables))
         qkv = model.backbone.layers[0].blocks[0].attn.qkv.weight
         self.assertNotIn(id(qkv), no_decay)
+
+
+class SegmenterModelTest(unittest.TestCase):
+    def test_outputs_loss_and_gradients(self):
+        model = build_model(_cfg(MODEL_NAME="segmenter")).train()
+        outputs = model(torch.randn(2, 3, 64, 64))
+        self.assertEqual(len(outputs), 1)
+        self.assertEqual(tuple(outputs[0].shape), (2, 6, 64, 64))
+        target = torch.randint(0, 6, (2, 64, 64))
+        target[:, :4] = 255
+        loss = SegLoss(ignore_index=255, dice_weight=0.0, deep_sup_weights=(1.0,))(outputs, target)
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+        for name, parameter in model.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+
+    def test_set_cross_entropy_accepts_the_masks(self):
+        model = build_model(_cfg(MODEL_NAME="segmenter")).train()
+        membership = [[1, 1, 0, 0, 0, 0], [0, 0, 1, 1, 1, 1]]
+        loss = SegLoss(ignore_index=255, dice_weight=0.0, deep_sup_weights=(1.0,),
+                       set_membership=membership)(
+            model(torch.randn(2, 3, 64, 64)), torch.randint(0, 2, (2, 64, 64)))
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+
+    def test_full_resolution_logits_for_awkward_sizes(self):
+        model = build_model(_cfg(MODEL_NAME="segmenter")).eval()
+        for size in ((64, 96), (70, 90), (33, 129), (8, 8)):
+            with torch.inference_mode():
+                logits = primary_logits(model(torch.zeros(1, 3, *size)))
+            self.assertEqual(tuple(logits.shape), (1, 6, *size))
+
+    def test_size_matches_the_paper(self):
+        model = build_model(_cfg(MODEL_NAME="segmenter"))
+        # The paper lists about 22M for Seg-S/16; the 32x32 position grid adds 0.32M to DeiT-S.
+        self.assertAlmostEqual(_count(model.backbone) / 1e6, 21.99, delta=0.01)
+        self.assertEqual(model.backbone.pos_embed.shape[1], 1 + POS_GRID ** 2)
+        self.assertEqual(len(model.decode_head.blocks), 2)
+        self.assertEqual(model.decode_head.blocks[0].attn.num_heads, 6)
+
+    def test_position_grid_resampling(self):
+        pos_embed = torch.randn(1, 1 + 4 ** 2, 8)
+        self.assertIs(resize_pos_embed(pos_embed, (4, 4)), pos_embed)
+        resized = resize_pos_embed(pos_embed, (3, 6))
+        self.assertEqual(tuple(resized.shape), (1, 1 + 3 * 6, 8))
+        torch.testing.assert_close(resized[:, 0], pos_embed[:, 0])
+
+    def test_mask_grid_is_row_major(self):
+        """Without decoder blocks, one patch token changes exactly one mask cell."""
+        head = build_model(_cfg(MODEL_NAME="segmenter")).decode_head.eval()
+        head.blocks = torch.nn.ModuleList()
+        height, width, row, column = 2, 3, 1, 2
+        tokens = torch.randn(1, height * width, 384)
+        changed = tokens.clone()
+        changed[0, row * width + column] += 1.0
+        with torch.inference_mode():
+            difference = (head(tokens, (height, width)) - head(changed, (height, width))).abs()
+        cells = difference.sum(1)[0] > 0
+        self.assertEqual(cells.nonzero().tolist(), [[row, column]])
+
+    def test_masks_stay_single_precision_under_amp(self):
+        head = build_model(_cfg(MODEL_NAME="segmenter")).decode_head.eval()
+        with torch.inference_mode(), torch.autocast("cpu", dtype=torch.bfloat16):
+            masks = head(torch.randn(1, 16, 384), (4, 4))
+        self.assertEqual(masks.dtype, torch.float32)
+
+    def test_embeddings_skip_weight_decay(self):
+        model = build_model(_cfg(MODEL_NAME="segmenter"))
+        optimizer = build_optimizer(model, SimpleNamespace(
+            LR=6e-5, WEIGHT_DECAY=0.01, NO_DECAY_BN_BIAS=True, BACKBONE_LR_MULT=1.0
+        ))
+        no_decay = {id(p) for g in optimizer.param_groups if g["weight_decay"] == 0.0
+                    for p in g["params"]}
+        for parameter in (model.backbone.cls_token, model.backbone.pos_embed,
+                          model.decode_head.cls_emb):
+            self.assertIn(id(parameter), no_decay)
+        self.assertNotIn(id(model.backbone.blocks[0].attn.qkv.weight), no_decay)
+        self.assertNotIn(id(model.decode_head.proj_patch), no_decay)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ import re
 
 import torch
 
+from common.models.segmenter import POS_GRID, resize_pos_embed
 from common.native_datasets import sha256_file
 
 
@@ -184,6 +185,24 @@ def convert_pidnet_official(state):
     return _rename(state, rules)
 
 
+_TIMM_DEIT_KEYS = (
+    r"cls_token|pos_embed|patch_embed\.proj\.(?:weight|bias)|norm\.(?:weight|bias)"
+    r"|blocks\.\d+\.(?:norm[12]|attn\.qkv|attn\.proj|mlp\.fc[12])\.(?:weight|bias)"
+)
+
+
+def convert_timm_deit(state):
+    """timm ``deit_small_patch16_224`` -> Segmenter's ``VisionTransformer``.
+
+    The names already match.  The 14x14 position grid is resampled to the
+    model's 32x32 (bilinear, class token kept), as the official Segmenter does
+    when it loads ImageNet weights.
+    """
+    out = _rename(state, ((_TIMM_DEIT_KEYS, r"\g<0>"),))
+    out["pos_embed"] = resize_pos_embed(out["pos_embed"], (POS_GRID, POS_GRID))
+    return out
+
+
 REGISTRY = {spec.name: spec for spec in (
     PretrainedSpec(
         name="resnet50.tv_in1k",
@@ -256,6 +275,17 @@ REGISTRY = {spec.name: spec for spec in (
         drop_prefixes=("down5.", "last_layer.", "linear."),
         source="XuJiacong/PIDNet README, Google Drive folder PIDNet_Models/ImageNet",
         convert=convert_pidnet_official,
+    ),
+    PretrainedSpec(
+        name="deit_small_patch16_224.fb_in1k",
+        arch="deit_small_patch16",
+        filename="deit_small_patch16_224.fb_in1k.bin",
+        url=("https://huggingface.co/timm/deit_small_patch16_224.fb_in1k"
+             "/resolve/main/pytorch_model.bin"),
+        sha256="52fa3d9d746c967a02a6765fa31368eb481d52cea269798a4a33c172f1c03242",
+        drop_prefixes=("head.",),
+        source="timm (Facebook DeiT-S ImageNet-1k release)",
+        convert=convert_timm_deit,
     ),
 )}
 

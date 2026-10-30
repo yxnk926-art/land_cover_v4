@@ -357,7 +357,11 @@ class UnifiedConfigTest(UnifiedCopies):
         b2, b0 = self.unified("segformer_b2_in1k"), self.unified("segformer_b0_in1k")
         for key in ("LR", "WEIGHT_DECAY", "POLY_POWER", "DROP_PATH_RATE", "MODEL_DROPOUT"):
             self.assertEqual(getattr(b2, key), getattr(b0, key), key)
-        self.assertEqual(self.unified("swin_upernet").DEEP_SUP_WEIGHTS, (1.0, 0.4))
+        swin, segmenter = self.unified("swin_upernet"), self.unified("segmenter_s16_in1k")
+        for key in ("LR", "WEIGHT_DECAY", "POLY_POWER", "BACKBONE_LR_MULT", "NO_DECAY_BN_BIAS"):
+            self.assertEqual(getattr(b2, key), getattr(swin, key), key)
+            self.assertEqual(getattr(b2, key), getattr(segmenter, key), key)
+        self.assertEqual(swin.DEEP_SUP_WEIGHTS, (1.0, 0.4))
         self.assertEqual(self.unified("deeplabv3plus_r50").DEEPLAB_BACKBONE, "resnet50")
 
     def test_leaves_name_registered_weights_and_unique_artifacts(self):

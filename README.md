@@ -1,6 +1,6 @@
 # land_cover_v4
 
-遥感土地覆盖语义分割的正式仓库：**统一细类协议**（创新点 A）下，9 个模型在 5 个数据集上联合训练。
+遥感土地覆盖语义分割的正式仓库：**统一细类协议**（创新点 A）下，9 种模型（SegFormer 分 B0、B2 两档，共 10 个配置）在 5 个数据集上联合训练。
 
 一个模型同时用五个数据集训练，输出 19 个统一细类。每个数据集仍读自己的原生标签，真值只要求概率落在对应的细类集合里
 （集合交叉熵）。评估时把细类概率按集合求和，再按各数据集的原生类别计算 mIoU。
@@ -18,6 +18,7 @@
 | Transformer | SegFormer-B2 | `segformer_b2_in1k` | 27.36M |
 | | SegFormer-B0 | `segformer_b0_in1k` | 3.72M |
 | | Swin-T + UperNet | `swin_upernet` | 59.84M |
+| | Segmenter-S/16 | `segmenter_s16_in1k` | 25.98M |
 | 实时轻量 | MobileNetV3-LRASPP | `mobilenetv3_lraspp_in1k` | 3.22M |
 | | PIDNet-S | `pidnet_s_in1k` | 7.72M |
 | | DDRNet-23-slim | `ddrnet` | 5.73M |
@@ -61,10 +62,10 @@ common/
   unified_taxonomy.py   读入并检查细类文件
   unified_protocol.py   模型登记表、数据集条目、标签偏移、联合验证
   pretrained.py         权重登记表与严格加载
-  models/               9 个模型的工厂与实现
+  models/               9 种模型的工厂与实现
 configs/
   config_unified_v4.py  基础配置
-  config_unified_*.py   每个模型一个 leaf
+  config_unified_*.py   每个配置一个 leaf
   class_maps/           细类文件
 tools/
   run_baselines.py      按顺序批量训练
@@ -101,7 +102,7 @@ $PY -m common.unified_taxonomy
 # 看批量训练计划，不写文件
 $PY tools/run_baselines.py --run-tag <tag> --seed 42 --dry-run
 
-# 训练：默认全部 9 个模型，由快到慢；一个失败就停止后面的队列
+# 训练：默认全部 10 个配置，由快到慢；一个失败就停止后面的队列
 $PY tools/run_baselines.py --run-tag <tag> --seed 42
 $PY tools/run_baselines.py --run-tag <tag> --seed 42 --models ddrnet unet_r50
 

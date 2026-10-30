@@ -13,7 +13,7 @@ from tests.test_unified_protocol import UnifiedCopies
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA is unavailable")
 class CudaBaselineSmokeTests(UnifiedCopies):
-    def test_nine_models_amp_update_then_fp32_whole_image_validation(self):
+    def test_all_models_amp_update_then_fp32_whole_image_validation(self):
         device = torch.device("cuda")
         for name in up.MODEL_CONFIGS:
             with self.subTest(model=name):

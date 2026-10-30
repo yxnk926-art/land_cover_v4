@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Train the unified fine-class models sequentially, with isolated artifacts.
 
-Without ``--models`` all nine models run, fastest first.  ``LAND_COVER_UNIFIED_DATASETS``
+Without ``--models`` all ten leaves run, fastest first.  ``LAND_COVER_UNIFIED_DATASETS``
 narrows the training datasets.
 
 This launcher only reads existing leaf configurations.  Training owns the final
@@ -64,7 +64,7 @@ def train_seed(value: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", nargs="+", choices=tuple(unified_protocol.MODEL_CONFIGS),
-                        help="default: all nine models, fastest first")
+                        help="default: all ten leaves, fastest first")
     parser.add_argument("--run-tag", type=run_tag, required=True)
     parser.add_argument("--seed", type=train_seed, default=42)
     parser.add_argument("--dry-run", action="store_true",

@@ -30,6 +30,7 @@ MODEL_CONFIGS = {
     "mobilenetv3_lraspp_in1k": "config_unified_mobilenetv3_lraspp_in1k",
     "pidnet_s_in1k": "config_unified_pidnet_s_in1k",
     "segformer_b0_in1k": "config_unified_segformer_b0_in1k",
+    "segmenter_s16_in1k": "config_unified_segmenter_s16_in1k",
     "deeplabv3plus_r50": "config_unified_deeplabv3plus_r50",
     "unet_r50": "config_unified_unet_r50",
     "segformer_b2_in1k": "config_unified_segformer_b2_in1k",

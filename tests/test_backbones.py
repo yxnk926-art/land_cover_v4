@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Numerical equivalence of the self-contained backbones with their references.
 
-ResNet-50 is checked against torchvision and Swin-T against timm on shared
-random weights, which proves both the computation and the checkpoint key
+ResNet-50 is checked against torchvision, and Swin-T and DeiT-S against timm, on
+shared random weights, which proves both the computation and the checkpoint key
 layout without needing any downloaded file.
 """
 import unittest
@@ -10,6 +10,7 @@ import unittest
 import torch
 
 from common.models.resnet import ResNetBackbone
+from common.models.segmenter import VisionTransformer
 from common.models.swin import SwinTransformer
 
 try:
@@ -102,6 +103,22 @@ class SwinBackboneTest(unittest.TestCase):
             actual = model.forward_stages(x, normalize=False)
         for e, a in zip(expected, actual):
             torch.testing.assert_close(a, e, rtol=1e-4, atol=2e-4)
+
+
+class VisionTransformerTest(unittest.TestCase):
+    @unittest.skipIf(timm is None, "timm is not installed")
+    def test_matches_timm_deit_small(self):
+        torch.manual_seed(0)
+        reference = timm.create_model("deit_small_patch16_224", pretrained=False,
+                                      num_classes=0).eval()
+        model = VisionTransformer(pos_grid=14, drop_path_rate=0.0).eval()
+        model.load_state_dict(reference.state_dict(), strict=True)
+        x = torch.randn(2, 3, 224, 224)
+        with torch.inference_mode():
+            expected = reference.forward_features(x)[:, 1:]
+            actual, grid = model(x)
+        self.assertEqual(grid, (14, 14))
+        torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
 
 
 if __name__ == "__main__":
