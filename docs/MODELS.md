@@ -110,7 +110,12 @@ Swin 的 `out_norms`、DDRNet 的 DAPPM 与分割头、PIDNet 的 D 分支/PAPPM
 
 - 编码器在共享随机权重上与 timm `deit_small_patch16_224` 数值一致。
 - 位置嵌入重采样与 timm `resample_abs_pos_embed`（bilinear，无抗锯齿）一致。
-- 解码器只对照官方源码阅读过，没有和官方代码做数值比对。
+- 解码器与官方代码（`rstrudel/segmenter` master，SHA256 前 12 位：`decoder.py` `0e488eb74fac`、`blocks.py`
+  `2c3432141eea`、`utils.py` `4185f00f8b83`）在共享随机权重、评估模式下比对过（2026-10-31，在服务器上手动运行）：
+  - 参数名和参数量（3,999,782）完全对应；
+  - 解码器输出的最大绝对差约 4e-6，补边、解码、上采样、裁剪的整条流程约 7e-6，属于 float32 舍入误差；
+  - 位置嵌入重采样完全相同。
+- dropout 是随机的，上面的比对不覆盖，它在训练时的位置只靠读代码确认。
 
 合成数据上的单步训练耗时（batch 8，crop 512，AMP，统一协议 19 类）。GPU 当时与正式训练共用，只看相对差异：
 
