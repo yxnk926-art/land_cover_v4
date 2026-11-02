@@ -19,6 +19,10 @@ BOUNDARY_WEIGHT = 20.0
 BOUNDARY_AWARE_WEIGHT = 1.0
 BOUNDARY_THRESHOLD = 0.8
 BOUNDARY_DILATION = 3
+# Potsdam's eroded labels separate classes by an ignore band (median 6 px), so the
+# boundary target needs to look across it.  Boundary-aware CE is averaged per dataset.
+BOUNDARY_BRIDGE_RADIUS = 12
+BOUNDARY_AWARE_PER_DATASET = True
 PRETRAINED = "pidnet_s.imagenet"
 LR = 1e-3
 WEIGHT_DECAY = 5e-4

@@ -84,16 +84,20 @@ class SetCrossEntropyLoss(nn.Module):
         if logits.shape[1] != self.allowed.shape[1]:
             raise ValueError(f"模型输出 {logits.shape[1]} 个类别，membership 有 "
                              f"{self.allowed.shape[1]} 个")
-        valid = target != self.ignore_index
-        if not valid.any():
+        if not (target != self.ignore_index).any():
             return logits.sum() * 0.0
+        return self.pixel_losses(logits, target).mean()
+
+    def pixel_losses(self, logits, target):
+        """Loss of every non-ignored pixel, in ``target[target != ignore_index]`` order."""
+        valid = target != self.ignore_index
         labels = target[valid]
         if labels.min() < 0 or labels.max() >= self.allowed.shape[0]:
             raise ValueError(f"标签超出 membership 的范围 [0, {self.allowed.shape[0]})")
         logits = logits.float().movedim(1, -1)[valid]          # [N, C]
         in_set = self.allowed[labels]                          # [N, C]
         log_set = torch.logsumexp(logits.masked_fill(~in_set, float("-inf")), dim=1)
-        return (torch.logsumexp(logits, dim=1) - log_set).mean()
+        return torch.logsumexp(logits, dim=1) - log_set
 
 
 class SegLoss(nn.Module):
@@ -176,16 +180,34 @@ def primary_logits(outputs):
     raise TypeError(f"unsupported model output type: {type(outputs).__name__}")
 
 
-def make_boundary_target(target, ignore_index=0, dilation=3):
+def _band_crossing_edges(target, valid, radius):
+    """Valid pixels touching ignore, with a pixel of another class within ``radius``."""
+    labels = target.float().unsqueeze(1)
+    keep = valid.unsqueeze(1)
+    kernel = 2 * radius + 1
+    highest = F.max_pool2d(labels.masked_fill(~keep, -1.0), kernel, 1, radius)
+    lowest = -F.max_pool2d(-labels.masked_fill(~keep, 1e6), kernel, 1, radius)
+    touches_ignore = F.max_pool2d((~keep).float(), 3, 1, 1) > 0
+    return (keep & touches_ignore & ((highest != labels) | (lowest != labels))).squeeze(1)
+
+
+def make_boundary_target(target, ignore_index=0, dilation=3, bridge_radius=0):
     """Derive a binary semantic boundary map without an OpenCV dependency.
 
     A pixel is a boundary when it or a valid four-neighbour belongs to a
     different class.  Pairs touching ``ignore_index`` are excluded, so padded
     validation borders are never taught as object boundaries.  Max pooling
     supplies the dilation step used by PIDNet's boundary supervision.
+
+    ``bridge_radius`` > 0 also marks the two rims of an ignore band that
+    separates two classes.  Potsdam's eroded labels need it: every pair of
+    classes is separated by such a band, so without it the target is empty and
+    the pixels along real boundaries are taught as negatives.
     """
     if target.ndim != 3:
         raise ValueError("boundary target expects labels shaped [B,H,W]")
+    if bridge_radius < 0:
+        raise ValueError("BOUNDARY_BRIDGE_RADIUS must not be negative")
     valid = target != ignore_index
     edge = torch.zeros_like(valid)
 
@@ -201,6 +223,8 @@ def make_boundary_target(target, ignore_index=0, dilation=3):
     )
     edge[:, :, 1:] |= horizontal
     edge[:, :, :-1] |= horizontal
+    if bridge_radius > 0 and not valid.all():
+        edge |= _band_crossing_edges(target, valid, bridge_radius)
 
     boundary = edge.unsqueeze(1).float()
     if dilation > 1:
@@ -255,7 +279,8 @@ class PIDNetLoss(nn.Module):
     def __init__(self, ignore_index=0, semantic_weights=(1.0, 0.4),
                  dice_weight=0.0, ce_class_weights=None,
                  boundary_weight=20.0, boundary_aware_weight=1.0,
-                 boundary_threshold=0.8, boundary_dilation=3, set_membership=None):
+                 boundary_threshold=0.8, boundary_dilation=3, set_membership=None,
+                 boundary_bridge_radius=0, boundary_aware_label_starts=None):
         super().__init__()
         self.semantic = SegLoss(
             ignore_index=ignore_index,
@@ -271,6 +296,15 @@ class PIDNetLoss(nn.Module):
         self.boundary_aware_weight = float(boundary_aware_weight)
         self.boundary_threshold = float(boundary_threshold)
         self.boundary_dilation = int(boundary_dilation)
+        self.boundary_bridge_radius = int(boundary_bridge_radius)
+        # First global label of each dataset: boundary-aware CE is averaged per
+        # dataset, otherwise datasets with many boundary pixels dominate it.
+        if boundary_aware_label_starts is None:
+            self.boundary_aware_label_starts = None
+        else:
+            self.register_buffer(
+                "boundary_aware_label_starts",
+                torch.as_tensor(sorted(boundary_aware_label_starts)), persistent=False)
         self.last_components = {}
 
     def _boundary_aware_ce(self, main, boundary, target):
@@ -293,13 +327,25 @@ class PIDNetLoss(nn.Module):
         boundary_target = torch.full_like(target, self.ignore_index)
         boundary_target[selected] = target[selected]
         if isinstance(self.semantic.ce, SetCrossEntropyLoss):
-            return self.semantic.ce(main, boundary_target)
+            if self.boundary_aware_label_starts is None:
+                return self.semantic.ce(main, boundary_target)
+            return self._mean_per_dataset(
+                self.semantic.ce.pixel_losses(main, boundary_target), target[selected])
         return F.cross_entropy(
             main,
             boundary_target,
             weight=self.semantic.ce.weight,
             ignore_index=self.ignore_index,
         )
+
+    def _mean_per_dataset(self, losses, labels):
+        starts = self.boundary_aware_label_starts
+        groups = torch.bucketize(labels, starts, right=True) - 1
+        sums = torch.zeros(len(starts), dtype=losses.dtype, device=losses.device)
+        sums = sums.index_add(0, groups, losses)
+        counts = torch.bincount(groups, minlength=len(starts)).to(losses.dtype)
+        present = counts > 0
+        return (sums[present] / counts[present]).mean()
 
     def forward(self, outputs, target):
         if not isinstance(outputs, dict):
@@ -316,7 +362,8 @@ class PIDNetLoss(nn.Module):
         semantic_outputs = [main, *list(auxiliary)]
         semantic_loss = self.semantic(semantic_outputs, target)
         boundary_target, valid = make_boundary_target(
-            target, self.ignore_index, self.boundary_dilation
+            target, self.ignore_index, self.boundary_dilation,
+            self.boundary_bridge_radius,
         )
         raw_boundary = self.boundary_loss(boundary, boundary_target, valid)
         raw_boundary_aware = self._boundary_aware_ce(main, boundary, target)
@@ -353,8 +400,15 @@ def build_criterion(cfg):
                 "main-head-only training use LOSS_NAME='seg' and "
                 "DEEP_SUP_WEIGHTS=(1.0,)"
             )
+        label_starts = None
+        if getattr(cfg, "BOUNDARY_AWARE_PER_DATASET", False):
+            if getattr(cfg, "LABEL_OFFSETS", None) is None:
+                raise ValueError("BOUNDARY_AWARE_PER_DATASET 需要 LABEL_OFFSETS（统一细类协议）")
+            label_starts = list(cfg.LABEL_OFFSETS.values())
         return PIDNetLoss(
             semantic_weights=cfg.DEEP_SUP_WEIGHTS,
+            boundary_bridge_radius=getattr(cfg, "BOUNDARY_BRIDGE_RADIUS", 0),
+            boundary_aware_label_starts=label_starts,
             boundary_weight=getattr(cfg, "BOUNDARY_WEIGHT", 20.0),
             boundary_aware_weight=getattr(cfg, "BOUNDARY_AWARE_WEIGHT", 1.0),
             boundary_threshold=getattr(cfg, "BOUNDARY_THRESHOLD", 0.8),
