@@ -135,6 +135,8 @@ UNIFIED_DATASETS = {d: _up.dataset_entry(DATASETS_ROOT, d, NATIVE_DATASETS)
 # Global label of dataset d's class c = LABEL_OFFSETS[d] + c; its row of
 # SET_MEMBERSHIP marks the fine classes that make up that native class.
 LABEL_OFFSETS, SET_MEMBERSHIP = _up.global_membership(_TAXONOMY, UNIFIED_DATASET_IDS)
+# What these datasets can teach about the fine classes; a report, not in the fingerprint.
+UNIFIED_IDENTIFIABILITY = _ut.identifiability(_TAXONOMY, UNIFIED_DATASET_IDS)
 DATASET_WEIGHTS = {d: 1.0 for d in UNIFIED_DATASET_IDS}
 
 NUM_CLASSES = len(FINE_CLASS_NAMES)          # model outputs: the fine classes

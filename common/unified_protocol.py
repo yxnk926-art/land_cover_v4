@@ -127,6 +127,48 @@ def import_unified_config(config_name, dataset_ids=None):
     return config
 
 
+# ---------------------------------------------------------------- training logs
+class DatasetLossMeter:
+    """Set cross-entropy of the main output per training dataset, for the history only.
+
+    The training loss mixes the datasets of a batch.  The label offset of each
+    pixel tells its dataset, so the loss can be split to show which dataset
+    overfits.  Training calls this every ``LOG_INTERVAL`` iterations.
+    """
+
+    def __init__(self, cfg, device):
+        self.names = list(cfg.LABEL_OFFSETS)
+        self.starts = torch.as_tensor([cfg.LABEL_OFFSETS[d] for d in self.names], device=device)
+        self.allowed = torch.as_tensor(cfg.SET_MEMBERSHIP, device=device).bool()
+        self.ignore_index = cfg.IGNORE_INDEX
+        self.loss = torch.zeros(len(self.names), dtype=torch.float64, device=device)
+        self.pixels = torch.zeros(len(self.names), dtype=torch.float64, device=device)
+
+    @torch.no_grad()
+    def update(self, logits, target):
+        logits = logits.float()
+        if logits.shape[-2:] != target.shape[-2:]:
+            logits = torch.nn.functional.interpolate(logits, size=target.shape[-2:],
+                                                     mode="bilinear", align_corners=False)
+        valid = target != self.ignore_index
+        labels = target[valid]
+        logits = logits.movedim(1, -1)[valid]
+        in_set = self.allowed[labels]
+        pixel_loss = (torch.logsumexp(logits, dim=1)
+                      - torch.logsumexp(logits.masked_fill(~in_set, float("-inf")), dim=1))
+        index = torch.bucketize(labels, self.starts, right=True) - 1
+        self.loss.index_add_(0, index, pixel_loss.double())
+        self.pixels.index_add_(0, index, torch.ones_like(pixel_loss, dtype=torch.float64))
+
+    def means(self):
+        """Mean loss per dataset since the last call; None for a dataset with no pixels."""
+        result = {name: (loss / pixels).item() if pixels else None
+                  for name, loss, pixels in zip(self.names, self.loss, self.pixels)}
+        self.loss.zero_()
+        self.pixels.zero_()
+        return result
+
+
 # ---------------------------------------------------------------- evaluation
 def projection(taxonomy_membership, device):
     """Float [C_d, |U|] matrix that sums fine probabilities per native class."""

@@ -1,7 +1,7 @@
 # 统一细类 v2 与联合训练协议
 
 > 状态：细类体系 v2 已于 2026-10-30 定稿（`configs/class_maps/unified_fine_v2.json`，`status: final`），取代 v1；
-> 9 个配置的正式训练 `unified_v2_s42` 于同日在开发仓库 `land_cover_v4dev` 启动，不含后来加入的 Segmenter-S/16。细类文件为 `final` 时才允许
+> 9 个配置的正式训练 `unified_v2_s42` 于同日在开发仓库 `land_cover_v4dev` 启动，后来加入的 Segmenter-S/16 于 2026-11-01 以同一 run-tag 和种子补入这一轮。细类文件为 `final` 时才允许
 > `--run-tag` 正式训练和批量启动器，草案只能冒烟、试跑和 dry-run。
 
 ## 做法
@@ -21,7 +21,7 @@
 
 - **按各数据集的官方定义拆分。** 只要有一个数据集把两类地物分进不同的原生类，就拆成两个细类。
   - 例如 FLAIR 把自然裸地算 bare soil，把采石场和填埋场算 pervious surface，所以 `bare_natural` 和 `extraction_dump` 分开；
-  - 又如 OEM 把天然草皮球场算 developed space，FLAIR 算 herbaceous vegetation，所以单设 `sports_grass`。
+  - 又如 OEM 把人工草坪（artificial grass areas）算 developed space，天然草皮球场归这里是推断；FLAIR 算 herbaceous vegetation，所以单设 `sports_grass`。
 - **每两个细类至少要有一个数据集能区分，否则合并。** 差别只涉及极少像素的细类也合并（见下一节）。
 - **一个细类在每个数据集里只属于一个原生类。** 集合交叉熵下，同属两个原生类的细类在这些像素上不受罚，
   会被模型当成万能类（见下一节）。
@@ -84,7 +84,7 @@ DDRNet-23-slim，种子和学习率曲线与 v1 相同，只跑 20 万次中的�
 
 ## 映射表
 
-无标记 = 官方定义写明；† = 由官方定义推断；? = 待核对（备选见下一节）。依据见 JSON 的 `sources`
+无标记 = JSON 中 `basis` 为 `official`，其中不少只是类名相同或部分成立，逐格结论见[勘误表](UNIFIED_FINE_V2_ERRATA.md)；† = 由官方定义推断；? = 待核对（备选见下一节）。依据见 JSON 的 `sources`
 和每个格子的 `note`。下表由 `python -m common.unified_taxonomy` 生成。
 
 | # | 细类 | OEM | FLAIR-HUB | Global-LoveDA | DeepGlobe | Potsdam |
@@ -191,6 +191,14 @@ DDRNet-23-slim，种子和学习率曲线与 v1 相同，只跑 20 万次中的�
   - Global-LoveDA 的 playground（原始值 8）；
   - Potsdam 的腐蚀边界；DeepGlobe 的 unknown；OEM 的 unknown。
 - **分辨率不统一**：0.05–0.5 m 混在一起训练，不做 GSD 归一化。
+- **SegFormer 解码头的学习率是官方的 1/10**：官方配置 `head` 的 `lr_mult=10`，这里不放大。SegFormer-B0 试跑 4 万次（解码头 6e-4、编码器 6e-5，同种子）的选模均值 0.6315，当前配方同一时刻 0.6278，差 0.004，在噪声范围内，所以配方不改。这只是 4 万次的结果，20 万次时没有对照。
+- **映射的依据强弱不一**：58 个 `official` 格子里有 13 个只是类名相同，5 个部分成立，2 个与原文矛盾，见[勘误表](UNIFIED_FINE_V2_ERRATA.md)。
+- **五个选择划分的严格度不同**（OEM 按城市、FLAIR 按省、Potsdam 按图块、Global-LoveDA 和 DeepGlobe 按图），均值混合了这些口径：
+  - Global-LoveDA、DeepGlobe 的选择图块约一半能和 train 拼接（51%、56%，边缘匹配的启发式，有假阳性）。这不等于分数被抬高：5 个模型在不相邻子集上的分数都高于全部图块（Global-LoveDA 高 0.011–0.016，DeepGlobe 高 0.038–0.083）。但两个子集不能直接比，判据要求图块边缘有纹理，纹理少的图块只会落在不相邻子集。所以相邻是否影响分数没有定论；
+  - Potsdam 的选择划分只有图块 2_10，clutter 占 13.99%（train 3.68%），单张图块占选模均值的 1/5；
+  - FLAIR 的 `snow` 在选择划分上没有像素，实际算 14 类。
+- **各数据集的训练量不等**：每个数据集抽 32 万张次，FLAIR 只相当于 2.1 个 epoch，DeepGlobe 相当于 569 个。
+  SegFormer-B0 单独训练 FLAIR，4 万次 0.6057，8 万次 0.6250（最后一次验证，best 0.6262），所以 FLAIR 的训练量可能不够。这只有一个模型、一个种子。所有模型的预算相同，模型之间的比较不受影响，配方没有改。
 
 ## 训练配方
 
@@ -260,6 +268,29 @@ $PY tools/evaluate_unified.py --model unet_r50 \
 - `MODEL_SLUG`：Swin 是 `swin_t_upernet`，DDRNet 是 `ddrnet23_slim`，其余与模型键相同。
 - 开发仓库里的 `unified_v2_s42` checkpoint 可以用本仓库的评估工具评估，只要把 `--checkpoint` 指过去。
   v1 的 checkpoint 与当前细类文件不符，评估工具会拒绝。
+
+## 中断与运行记录
+
+- **续训**：`--run-tag` 默认拒绝写入已有结果的目录。中断后用同样的命令加 `--resume`：
+  有 `checkpoint_last.pth` 且续训指纹一致的模型接着训练，已跑完的立即结束，没有 checkpoint 的从头开始。
+  随机状态、优化器、AMP 缩放器都会恢复；leaf 自己不能打开 `RESUME`。
+- **保存频率**：每次验证（2 万次迭代）保存一次，所以一次中断最多损失这段进度。保存是先写临时文件再改名，保存时断电旧文件也完好。
+- **代码版本**：`resolved_config.json` 和 checkpoint 的 `code` 字段记录 git commit、未提交的已跟踪文件，
+  以及 `common/`、`configs/`、`tools/` 的文件哈希。工作区未提交时，`core_sha256` 可以和之后的提交对上。
+  日志每次启动写一行 `[*] code:`；续训时代码和 checkpoint 不同会警告，但不拒绝。
+- **历史文件**（`OUT_DIR` 下，JSON Lines；续训后同一个 epoch 可能出现两次，取最后一条）：
+  - `train_history.jsonl`：每个 epoch 的 loss、学习率、耗时，统一协议另有 `dataset_loss`（每 `LOG_INTERVAL` 次迭代抽样一次，只统计主输出）；
+  - `val_history.jsonl`：每次验证的完整分数，含各数据集的原生混淆矩阵和 `fine_confusion`。
+- **评估工具**：
+  - 比较 checkpoint 的完整协议快照，`SEED`、`NUM_WORKERS` 等运行设置除外；
+  - 默认只接受 `best_model.pth`，评估 `checkpoint_last.pth` 要加 `--allow-last`；
+  - `--selection` 评估选择划分而不是 test；
+  - `--per-image` 另存逐图混淆矩阵 `per_image_<dataset>_<split>.npz`，用于同图配对检验和子集重算；
+  - `metrics.json` 同时有 `miou_present` 和 `miou_fixed`。
+- **去掉数据集时**：`python -m common.unified_taxonomy` 列出去掉每个数据集后的秩和分不开的细类；
+  `UNIFIED_IDENTIFIABILITY` 记入配置快照，有分不开的细类时训练日志会写 `[!]`。留一数据集实验要同时报告全部类和可达类。
+
+`unified_v2_s42` 中在这些改动之前跑完的模型没有 `code` 字段和历史文件。
 
 ## 验证
 

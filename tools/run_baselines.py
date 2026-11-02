@@ -40,6 +40,7 @@ class BaselineRun:
     # The train and selection lists of every dataset.
     lists: tuple
     summary: dict
+    resume: bool = False
 
 
 def run_tag(value: str) -> str:
@@ -67,12 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="default: all ten leaves, fastest first")
     parser.add_argument("--run-tag", type=run_tag, required=True)
     parser.add_argument("--seed", type=train_seed, default=42)
+    parser.add_argument("--resume", action="store_true",
+                        help="continue this run-tag after an interruption: a model with "
+                             "checkpoint_last.pth resumes (same fingerprint only), a finished "
+                             "one exits at once, one without a checkpoint starts from zero")
     parser.add_argument("--dry-run", action="store_true",
                         help="print commands and resolved protocol without training or writing")
     return parser
 
 
-def build_runs(models: Sequence[str], tag: str, seed: int) -> list[BaselineRun]:
+def build_runs(models: Sequence[str], tag: str, seed: int,
+               resume: bool = False) -> list[BaselineRun]:
     """Resolve plans without mutating the imported modules or touching outputs."""
     run_tag(tag)
     train_seed(str(seed))
@@ -125,8 +131,10 @@ def build_runs(models: Sequence[str], tag: str, seed: int) -> list[BaselineRun]:
         }
         command = (sys.executable, "-u", str(PROJECT_ROOT / "common" / "train.py"),
                    "--config", config, "--run-tag", tag, "--seed", str(seed))
+        if resume:
+            command += ("--resume",)
         runs.append(BaselineRun(model, config, command, output_dir, checkpoint_dir,
-                                log_path, lists, summary))
+                                log_path, lists, summary, resume))
     return runs
 
 
@@ -136,9 +144,9 @@ def preflight(runs: Sequence[BaselineRun], *, check_data: bool = True) -> None:
         for path in (run.output_dir, run.checkpoint_dir):
             if path.is_symlink():
                 raise ValueError(f"refusing a symlink artifact directory: {path}")
-            if path.exists() and (not path.is_dir() or any(path.iterdir())):
+            if path.exists() and (not path.is_dir() or (any(path.iterdir()) and not run.resume)):
                 raise ValueError(f"artifact path is already occupied; choose a new run-tag: {path}")
-        if run.log_path.exists() or run.log_path.is_symlink():
+        if run.log_path.is_symlink() or (run.log_path.exists() and not run.resume):
             raise ValueError(f"launcher log already exists; choose a new run-tag: {run.log_path}")
         if check_data:
             for path in run.lists:
@@ -175,7 +183,7 @@ def _stop_process_group(proc: subprocess.Popen) -> None:
 def run_one(run: BaselineRun) -> int:
     run.log_path.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation also closes the preflight/start race for this log.
-    with run.log_path.open("x", encoding="utf-8", buffering=1) as log:
+    with run.log_path.open("a" if run.resume else "x", encoding="utf-8", buffering=1) as log:
         log.write(json.dumps(run.summary, ensure_ascii=False, sort_keys=True) + "\n")
         kwargs = {"start_new_session": True} if os.name == "posix" else {
             "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
@@ -211,7 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     models = args.models or list(unified_protocol.MODEL_CONFIGS)
     try:
-        runs = build_runs(models, args.run_tag, args.seed)
+        runs = build_runs(models, args.run_tag, args.seed, args.resume)
         preflight(runs, check_data=not args.dry_run)
     except (ValueError, OSError) as exc:
         print(f"Baseline preflight failed: {exc}", file=sys.stderr)

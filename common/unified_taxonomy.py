@@ -24,6 +24,11 @@ the native sets cannot work:
 * every two fine classes must be told apart by at least one dataset, otherwise
   nothing in the data can teach the difference.
 
+``identifiability`` reports the same question for a subset of the datasets and
+the rank of the stacked matrices.  It is a report, not a load check: taxonomy
+v1 has rank 22 of 23 and stays readable, and a leave-one-dataset-out run has to
+know what it cannot learn rather than be refused.
+
 ``python -m common.unified_taxonomy`` prints the mapping tables and the
 review list (uncertain cells, overlaps, classes no dataset labels alone).
 """
@@ -185,6 +190,27 @@ def _check_sets(taxonomy):
             raise ValueError(f"细类 {a} 和 {b} 在每个数据集里的归属都相同，数据无法区分，应合并")
 
 
+def identifiability(taxonomy, dataset_ids=None):
+    """What training on ``dataset_ids`` can teach about the fine classes.
+
+    ``rank`` is that of the stacked membership matrices (full rank = number of
+    fine classes); ``indistinguishable`` lists the fine-class pairs no chosen
+    dataset tells apart; ``overlaps`` the fine classes in two native classes.
+    """
+    dataset_ids = list(dataset_ids or taxonomy.datasets)
+    stacked = np.vstack([taxonomy.membership(d) for d in dataset_ids])
+    columns = list(zip(taxonomy.fine_keys, stacked.T))
+    overlaps = taxonomy.overlaps()
+    return {
+        "datasets": dataset_ids,
+        "fine_classes": len(taxonomy.fine_keys),
+        "rank": int(np.linalg.matrix_rank(stacked)),
+        "indistinguishable": [[a, b] for (a, x), (b, y) in itertools.combinations(columns, 2)
+                              if np.array_equal(x, y)],
+        "overlaps": {d: list(overlaps[d]) for d in dataset_ids if overlaps.get(d)},
+    }
+
+
 # ---------------------------------------------------------------- report
 _BASIS_MARK = {"official": "", "inferred": " †", "uncertain": " ?"}
 
@@ -237,6 +263,14 @@ def main(argv=None):
           f"sha256={taxonomy.sha256}: {len(taxonomy.fine_keys)} 个细类，"
           f"{len(taxonomy.datasets)} 个数据集\n")
     print(markdown(taxonomy))
+    print("\n可区分性（去掉一个数据集后）：\n")
+    report = identifiability(taxonomy)
+    print(f"- 全部数据集：秩 {report['rank']}/{report['fine_classes']}，"
+          f"分不开的细类 {report['indistinguishable'] or '无'}")
+    for left_out in taxonomy.datasets:
+        report = identifiability(taxonomy, [d for d in taxonomy.datasets if d != left_out])
+        print(f"- 去掉 {left_out}：秩 {report['rank']}/{report['fine_classes']}，"
+              f"分不开的细类 {report['indistinguishable'] or '无'}")
     return 0
 
 

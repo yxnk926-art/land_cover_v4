@@ -16,6 +16,7 @@ import importlib
 import json
 import random
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -32,7 +33,7 @@ from common.numerical_diagnostics import (
     NumericalValidationError, save_validation_failure,
 )
 from common.pretrained import apply_pretrained, resolve_pretrained
-from common.unified_protocol import evaluate_unified, format_unified_scores
+from common.unified_protocol import DatasetLossMeter, evaluate_unified, format_unified_scores
 from common.unified_taxonomy import load_taxonomy
 
 # Set when run as a script; tests and tools assign their own.
@@ -269,11 +270,76 @@ def best_checkpoint_payload(model, epoch, scores, module, resolved):
         "source_selection_value": float(scores["miou"]),
         "config": config_snapshot(module),
         "protocol": resolved["protocol"],
+        "code": resolved.get("code"),
         "protocol_fingerprint": resolved["protocol_fingerprint"],
         "source_selection_by_dataset": {
             name: float(value["miou"]) for name, value in scores["datasets"].items()},
     }
     return payload
+
+
+def atomic_torch_save(payload, path):
+    """Write beside the target, then rename: an interrupted save keeps the old file whole."""
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "wb") as handle:
+        torch.save(payload, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, path)
+
+
+def code_provenance(root=PROJECT_ROOT):
+    """Which code a run started from: git commit, uncommitted tracked files, file hashes.
+
+    ``core_sha256`` covers common/, configs/ and tools/, so a run started from an
+    uncommitted tree can still be matched to the commit made later.
+    """
+    def git(*args):
+        try:
+            done = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                                  text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.rstrip() if done.returncode == 0 else None
+
+    files = {}
+    for folder in ("common", "configs", "tools"):
+        for path in sorted((Path(root) / folder).rglob("*")):
+            if path.suffix in (".py", ".json") and path.is_file():
+                relative = path.relative_to(root).as_posix()
+                files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    status = git("status", "--porcelain", "--untracked-files=no")
+    return {
+        "git_commit": git("rev-parse", "HEAD"),
+        "git_dirty": None if status is None else [line[3:] for line in status.splitlines()],
+        "core_sha256": hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+        "files": files,
+    }
+
+
+def history_value(value):
+    """Plain JSON values for the history files."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): history_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [history_value(item) for item in value]
+    return value
+
+
+def append_history(path, record):
+    """One JSON line per record.
+
+    After a resume the epochs since the last checkpoint appear twice; readers
+    keep the last record of each epoch.
+    """
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(history_value(record), ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def write_resolved_config(out_dir, module):
@@ -285,6 +351,7 @@ def write_resolved_config(out_dir, module):
         "resolved": config_snapshot(module),
         "protocol": protocol,
         "protocol_fingerprint": protocol_fingerprint(protocol),
+        "code": code_provenance(),
     }
     path = os.path.join(out_dir, "resolved_config.json")
     temp_path = path + ".tmp"
@@ -312,7 +379,10 @@ def apply_run_overrides(module, args):
         if not 0 <= args.seed < 2 ** 32:
             raise ValueError("seed 必须在 [0, 2**32)")
         module.SEED = args.seed
+    resume = getattr(args, "resume", False)
     if args.run_tag is None:
+        if resume:
+            raise ValueError("--resume 要和 --run-tag 一起用")
         return
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", args.run_tag):
         raise ValueError("run-tag 必须以字母或数字开头，且仅含字母、数字、点、下划线和连字符")
@@ -326,10 +396,13 @@ def apply_run_overrides(module, args):
                       ("CKPT_DIR", module.CHECKPOINT_ROOT)):
         parent = Path(root).resolve() / "baselines" / args.run_tag
         path = parent / module.MODEL_SLUG
-        if path.resolve() != path or (path.exists() and (not path.is_dir() or any(path.iterdir()))):
+        occupied = path.exists() and (not path.is_dir() or (any(path.iterdir()) and not resume))
+        if path.resolve() != path or occupied:
             raise ValueError(f"baseline 输出已存在或路径发生重定向，拒绝覆盖：{path}")
         setattr(module, key, str(path))
     module.RUN_TAG = args.run_tag
+    # The fingerprint check of the resume path still refuses another protocol.
+    module.RESUME = resume
     module.EXP_NAME = f"{module.EXP_NAME}_{args.run_tag}"
 
 
@@ -362,10 +435,19 @@ def main():
         log_file.flush()
 
     resolved = write_resolved_config(cfg.OUT_DIR, cfg)
+    code = resolved["code"]
+    log(f"[*] code: commit {code['git_commit']} | 未提交的改动 {code['git_dirty'] or '无'} | "
+        f"core_sha256 {code['core_sha256'][:12]}")
+    train_history = os.path.join(cfg.OUT_DIR, "train_history.jsonl")
+    val_history = os.path.join(cfg.OUT_DIR, "val_history.jsonl")
 
     # ------------------------------------------------------------ 数据与模型
     # One train loader over every dataset; val_loader maps dataset -> loader.
     train_loader, val_loader = build_unified_dataloaders(cfg)
+    dataset_loss = DatasetLossMeter(cfg, device)
+    unresolved = getattr(cfg, "UNIFIED_IDENTIFIABILITY", {}).get("indistinguishable")
+    if unresolved:
+        log(f"[!] 这组数据集分不开的细类：{unresolved}")
     iters_per_epoch = len(train_loader)
     # 调度视野可以长于实际训练长度：试跑只训练前 40 个 epoch 时，仍沿用完整调度的
     # 学习率轨迹，结果才能和正式训练的同一时刻比较。
@@ -415,6 +497,10 @@ def main():
             restore_rng_state(ckpt["rng_state"], train_loader, val_loader)
         best_miou = ckpt.get("best_miou", 0.0)
         log(f"[*] 从 {last_ckpt} 续训: epoch {start_epoch}, best mIoU {best_miou:.6f}")
+        saved_code = ckpt.get("code") or {}
+        if saved_code.get("core_sha256") != code["core_sha256"]:
+            log(f"[!] 当前代码与 checkpoint 不同：checkpoint commit {saved_code.get('git_commit')}，"
+                f"当前 commit {code['git_commit']}，以日志里每次启动的 code 行为准")
         if early_stopper is not None:
             restored = early_stopper.load_state_dict(ckpt.get("early_stopping"))
             if not restored:
@@ -502,6 +588,8 @@ def main():
 
             loss_meter.update(loss.item(), img.size(0))
             if it % cfg.LOG_INTERVAL == 0:
+                if dataset_loss is not None:
+                    dataset_loss.update(logits, lab)
                 done = cur_iter + 1
                 eta = (time.time() - t0) / (it + 1) * (iters_per_epoch - it - 1)
                 component_text = ""
@@ -516,6 +604,11 @@ def main():
                     f"eta {eta / 60:.1f}min iter {done}/{max_iter}{component_text}")
 
         log(f"== epoch {epoch} 完成: 平均 loss {loss_meter.avg:.4f}, 耗时 {(time.time() - t0) / 60:.1f}min")
+        record = {"epoch": epoch, "iter": (epoch + 1) * iters_per_epoch, "loss": loss_meter.avg,
+                  "lr": lr, "minutes": (time.time() - t0) / 60}
+        if dataset_loss is not None:
+            record["dataset_loss"] = dataset_loss.means()
+        append_history(train_history, record)
 
         # -------------------------------------------------------- 验证与保存
         if (epoch + 1) % cfg.EVAL_INTERVAL == 0 or epoch == cfg.EPOCHS - 1:
@@ -543,12 +636,15 @@ def main():
                 raise
             log(f"[val] epoch {epoch}\n" + format_unified_scores(scores, cfg))
 
+            append_history(val_history, {"epoch": epoch, "iter": (epoch + 1) * iters_per_epoch,
+                                         "scores": scores})
+
             # raw best 与“足以重置 patience 的有效提升”是两个概念：微小提升仍保存
             # best_model，但只有超过 min_delta 才延长训练。
             if scores["miou"] > best_miou:
                 best_miou = scores["miou"]
                 best_path = os.path.join(cfg.CKPT_DIR, "best_model.pth")
-                torch.save(best_checkpoint_payload(model, epoch, scores, cfg, resolved), best_path)
+                atomic_torch_save(best_checkpoint_payload(model, epoch, scores, cfg, resolved), best_path)
                 log(f"[*] 新最优模型: epoch {epoch}, val mIoU {best_miou:.6f} -> {best_path}")
 
             should_stop = False
@@ -559,7 +655,7 @@ def main():
                     f"{early_stopper.reference_score:.6f} | "
                     f"bad {early_stopper.bad_evals}/{early_stopper.patience}")
 
-            torch.save({
+            atomic_torch_save({
                 "format_version": 3,
                 "epoch": epoch,
                 "model": model.state_dict(),
@@ -573,6 +669,7 @@ def main():
                 "protocol": resolved["protocol"],
                 "protocol_fingerprint": resolved["protocol_fingerprint"],
                 "rng_state": capture_rng_state(train_loader, val_loader),
+                "code": code,
             }, last_ckpt)
 
             if should_stop:
@@ -589,6 +686,9 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="configs/ 下的 leaf 文件名，不带 .py")
     parser.add_argument("--run-tag", help="为全新 baseline 隔离输出；拒绝覆盖已有结果")
+    parser.add_argument("--resume", action="store_true",
+                        help="继续这个 run-tag 中断的训练：有 checkpoint_last.pth 且指纹一致就续训，"
+                             "还没有 checkpoint 就从头开始")
     parser.add_argument("--seed", type=int, help="显式训练随机种子")
     return parser.parse_args(argv)
 

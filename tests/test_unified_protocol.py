@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unified fine-class protocol v4: taxonomy, set loss, projection, sampler, configs, tools."""
 import contextlib
+import dataclasses
 import copy
 import dataclasses
 import importlib
@@ -458,7 +459,8 @@ class UnifiedToolsTest(UnifiedCopies):
     def _checkpoint(self, cfg, path, **changes):
         snapshot = {**evaluate_unified.config_snapshot(cfg), **changes}
         torch.save({"kind": "best_model", "epoch": 7, "model": build_model(cfg).state_dict(),
-                    "config": snapshot, "protocol_fingerprint": "test",
+                    "config": snapshot, "protocol": {"MEAN": snapshot["MEAN"]},
+                    "protocol_fingerprint": "test",
                     "source_selection_value": 0.4,
                     "source_selection_by_dataset": {d: 0.4 for d in cfg.UNIFIED_DATASET_IDS}}, path)
 
@@ -498,6 +500,21 @@ class UnifiedToolsTest(UnifiedCopies):
             self.assertEqual(code, 2)
             self.assertIn("UNIFIED_TAXONOMY_SHA256", err.getvalue())
             self.assertFalse(out.exists())
+
+    def test_launcher_resume_accepts_an_occupied_run(self):
+        os.environ[up.DATASETS_ENV] = ",".join(SYNTHETIC)
+        fresh = run_baselines.build_runs(["ddrnet"], "u_s42", 42)[0]
+        resumed = run_baselines.build_runs(["ddrnet"], "u_s42", 42, resume=True)[0]
+        self.assertNotIn("--resume", fresh.command)
+        self.assertIn("--resume", resumed.command)
+        with tempfile.TemporaryDirectory() as tmp:
+            occupied = Path(tmp).resolve()
+            log = occupied / "run.log"
+            log.write_text("old\n", encoding="utf-8")
+            place = dict(output_dir=occupied, checkpoint_dir=occupied, log_path=log)
+            with self.assertRaisesRegex(ValueError, "occupied"):
+                run_baselines.preflight([dataclasses.replace(fresh, **place)], check_data=False)
+            run_baselines.preflight([dataclasses.replace(resumed, **place)], check_data=False)
 
     def test_launcher_resolves_unified_leaves(self):
         os.environ[up.DATASETS_ENV] = ",".join(SYNTHETIC)

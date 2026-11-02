@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """SegFormer-B2 with NVIDIA's ImageNet-1k MiT-B2 encoder.
 
-Learning rate 6e-5 and poly 1.0 are the official fine-tuning recipe.
+Learning rate 6e-5 and poly 1.0 follow the official fine-tuning recipe, except
+that the official decode head has lr_mult=10 and this one does not; a 40k pilot
+on SegFormer-B0 gained 0.004, within the noise, so the recipe stays.
 """
 import os
 

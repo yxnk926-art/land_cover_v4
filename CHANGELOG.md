@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-11-01: 中断恢复、运行记录和映射勘误
+
+来自 2026-11-01 审查中值得现在做的部分。配方和细类文件都没有改，已跑完模型的续训指纹不变。
+
+- `common/train.py` 和 `tools/run_baselines.py` 加 `--resume`：有 `checkpoint_last.pth` 的接着训练（指纹一致才放行），已跑完的立即结束，没有 checkpoint 的从头开始。checkpoint 改为原子写入。
+- `resolved_config.json` 和 checkpoint 记录 `code`：commit、未提交的已跟踪文件、`common/`、`configs/`、`tools/` 的文件哈希；日志每次启动写一行 `[*] code:`；续训时代码不同会警告。
+- 新增 `train_history.jsonl`（每个 epoch，含逐数据集 loss）和 `val_history.jsonl`（完整分数和两种混淆矩阵）。
+- `tools/evaluate_unified.py` 比较完整协议快照；评估 `checkpoint_last.pth` 要加 `--allow-last`；新增 `--selection`、`--per-image`。
+- `common/unified_taxonomy.py` 新增 `identifiability`，配置快照里有 `UNIFIED_IDENTIFIABILITY`（秩，以及一组数据集分不开的细类）。
+- 新增 `docs/UNIFIED_FINE_V2_ERRATA.md`，逐格给出映射依据。58 个 `official` 格子里，38 个官方原文明写，13 个只是类名相同，5 个部分成立，2 个与原文矛盾。
+- SegFormer-B2 的文档串写明官方解码头有 `lr_mult=10`，这里没有。
+
+试跑和重算（在开发仓库，只用选择划分，不读 test，单种子）：
+
+- SegFormer-B0 解码头 6e-4、编码器 6e-5：2 万次 0.6122，4 万次 0.6315；当前配方 0.6037、0.6278。4 万次差 0.004，低于 0.02 的门槛且在噪声范围内，配方不改。
+- SegFormer-B0 单独训练 FLAIR：4 万次 0.6057；8 万次 0.6250（best 0.6262）。统一训练在相同训练量下 FLAIR 是 0.6050。
+- 5 个已完成模型的逐图混淆矩阵重算出的 25 个数据集分数，与记录值相差不超过 1e-4。没有强边缘匹配的选择图块，分数高于全部图块（Global-LoveDA 高 0.011–0.016，DeepGlobe 高 0.038–0.083），与"相邻抬高分数"的预期相反；但判据只匹配有纹理的边缘，两个子集不能直接比，这个问题还没有结论。
+
+验证结果：
+
+- 测试：175 个通过，1 个跳过。
+- 开发仓库中 36 个配置的续训指纹与 `d3e44f2` 相同；DDRNet、PIDNet 的短跑在新旧代码上损失、分数和权重都相同，本仓库也相同；`unified_v2_s42` 的全部 checkpoint 通过新的评估校验。
+- 在开发仓库的 GPU 上用 SIGKILL 中断再续训，最终权重与不中断的运行相同（DDRNet、SegFormer-B0，Potsdam 确定性短跑）。
+- 没有验证：完整长度、非确定性运行的续训；评估工具在真实 test 上运行。
+
+没有做：审查的 P4、P5、P6（P6 要和 C1 一起改）。
+
+开发仓库的 `unified_v2_s42` 当天补入 Segmenter-S/16（同一 run-tag 和种子），优化器仍是暂定值。
+
 ## 2026-10-31: 加入 Segmenter-S/16
 
 - 新模型 `segmenter`（`common/models/segmenter.py`）和配置 `config_unified_segmenter_s16_in1k`（键

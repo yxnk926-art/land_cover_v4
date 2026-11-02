@@ -555,7 +555,7 @@ def sliding_window_logits(model, img, window, stride):
 
 @torch.no_grad()
 def evaluate(model, loader, device, num_classes, ignore_index=0, amp=True,
-             window=None, stride=None, projection=None):
+             window=None, stride=None, projection=None, per_image=None):
     """在验证集上推理，返回 ConfusionMatrix.scores() 的结果。
 
     默认整图推理；给出 ``window``/``stride`` 时改用重叠滑窗（大幅影像用）。
@@ -563,6 +563,9 @@ def evaluate(model, loader, device, num_classes, ignore_index=0, amp=True,
     ``projection``（统一细类协议）：[num_classes, F] 的 0/1 矩阵，模型输出 F 个细类，
     每个原生类的得分是其细类集合的概率之和，取最大者为预测。结果另含
     ``fine_confusion``：[num_classes, F] 像素计数，行 = 原生真值，列 = 细类 argmax。
+
+    ``per_image``：传入一个列表时，每张图追加 ``(名字, [num_classes, num_classes] 混淆矩阵)``，
+    用于同图配对检验和子集重算。
     """
     model.eval()
     cm = ConfusionMatrix(num_classes, ignore_index)
@@ -612,6 +615,12 @@ def evaluate(model, loader, device, num_classes, ignore_index=0, amp=True,
             probs = torch.softmax(logits.float(), dim=1)
             pred = torch.einsum("cf,bfhw->bchw", projection, probs).argmax(1)
         cm.update(pred, lab)  # also rejects out-of-taxonomy labels
+        if per_image is not None:
+            for name, one_pred, one_lab in zip(names, pred.cpu().numpy(), np.asarray(lab)):
+                keep = one_lab != ignore_index
+                per_image.append((name, np.bincount(
+                    one_lab[keep].astype(np.int64) * num_classes + one_pred[keep],
+                    minlength=num_classes ** 2).reshape(num_classes, num_classes)))
         if projection is not None:
             fine = logits.argmax(1).cpu().numpy().reshape(-1)
             target = np.asarray(lab).reshape(-1)

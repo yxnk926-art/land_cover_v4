@@ -11,8 +11,12 @@ the fine-class probabilities are summed over each native class's set (see
 
 By default the datasets the checkpoint was trained on are evaluated;
 ``--datasets`` may name others of the taxonomy (held-out evaluation).  The
-checkpoint must carry the same taxonomy, label stacking, model and training
-splits as the current config.  Results go to ``evaluations/unified_v4/<scope>/
+checkpoint must carry the same protocol snapshot as the current config, and
+only ``best_model.pth`` is accepted unless ``--allow-last`` is given.
+``--selection`` scores the selection splits instead of test (analysis before
+test is opened), ``--per-image`` adds per-image confusion matrices
+(``per_image_<dataset>_<split>.npz``) for paired tests and subset scores.
+Results go to ``evaluations/unified_v4/<scope>/
 <model>/<checkpoint sha256[:12]>/`` (never overwritten): ``metrics.json`` with
 per-split native metrics plus the fine-class confusion (rows = native ground
 truth, columns = fine argmax), and ``scores.txt``.
@@ -52,6 +56,9 @@ CHECKPOINT_GUARD_KEYS = (
     "UNIFIED_DATASET_IDS", "LABEL_OFFSETS", "SET_MEMBERSHIP", "MODEL_NAME",
     "IN_CHANNELS", "NUM_CLASSES", "IGNORE_INDEX",
 )
+# Run settings that do not change what a checkpoint's numbers mean; the datasets
+# are compared by DATASET_GUARD_KEYS, because their paths may move.
+PROTOCOL_EXEMPT_KEYS = ("SEED", "PRETRAINED_SHA256", "NUM_WORKERS", "UNIFIED_DATASETS")
 # Per training dataset: the same prepared copy, split and class definition.
 DATASET_GUARD_KEYS = ("split_id", "spec_sha256", "class_names")
 SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -236,6 +243,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--datasets", nargs="+", default=None,
                         help="默认评估 checkpoint 训练用的全部数据集；可加入细类体系中的其他数据集")
+    parser.add_argument("--selection", action="store_true",
+                        help="评估选择划分而不是 test，用于打开 test 之前的分析")
+    parser.add_argument("--allow-last", action="store_true",
+                        help="允许评估 checkpoint_last.pth（默认只接受 best_model.pth）")
+    parser.add_argument("--per-image", action="store_true",
+                        help="另存逐图混淆矩阵，用于同图配对检验和子集重算")
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     return parser.parse_args(argv)
@@ -264,6 +277,23 @@ def check_checkpoint(saved: Mapping[str, Any], config) -> None:
         for key in DATASET_GUARD_KEYS:
             if _jsonable(old.get(key)) != _jsonable(entry[key]):
                 raise ValueError(f"checkpoint 中 {dataset_id} 的 {key} 与当前准备副本不一致")
+
+
+def check_protocol(metadata: Mapping[str, Any], config) -> None:
+    """Every field of the checkpoint's protocol snapshot must match the current config."""
+    protocol = metadata.get("protocol")
+    if not isinstance(protocol, Mapping):
+        raise ValueError("checkpoint 缺少协议快照")
+    different = sorted(key for key, value in protocol.items()
+                       if key not in PROTOCOL_EXEMPT_KEYS
+                       and _jsonable(value) != _jsonable(getattr(config, key, None)))
+    if different:
+        raise ValueError(f"checkpoint 的协议与当前 config 不一致：{', '.join(different)}")
+
+
+def check_kind(metadata: Mapping[str, Any], allow_last: bool) -> None:
+    if metadata.get("kind") != "best_model" and not allow_last:
+        raise ValueError("这不是 best_model；评估 checkpoint_last.pth 要加 --allow-last")
 
 
 def resolve_datasets(config, taxonomy, requested: Sequence[str] | None):
@@ -299,7 +329,8 @@ def resolve_output_dir(args: argparse.Namespace, config, checkpoint_sha: str,
                        entries: Mapping[str, Any]) -> Path:
     if args.output_dir is None:
         output = (PROJECT_ROOT / "evaluations" / "unified_v4" / safe_component(config.RUN_SCOPE)
-                  / safe_component(config.MODEL_SLUG) / checkpoint_sha[:12])
+                  / safe_component(config.MODEL_SLUG)
+                  / (checkpoint_sha[:12] + ("_selection" if args.selection else "")))
     else:
         output = args.output_dir.expanduser()
         if not output.is_absolute():
@@ -320,9 +351,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     from common.models import build_model
 
     path, state, metadata, saved = read_checkpoint(args.checkpoint)
+    check_kind(metadata, args.allow_last)
     config = up.import_unified_config(up.MODEL_CONFIGS[args.model],
                                       list(saved["UNIFIED_DATASET_IDS"]))
     check_checkpoint(saved, config)
+    check_protocol(metadata, config)
     taxonomy = load_taxonomy(config.TAXONOMY_PATH)
     entries = resolve_datasets(config, taxonomy, args.datasets)
     checkpoint = {
@@ -337,17 +370,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     model.load_state_dict(state, strict=True)
     model = model.to(device)
 
-    results, texts = {}, []
+    results, texts, per_image = {}, [], {}
     for dataset_id, entry in entries.items():
         membership = taxonomy.membership(dataset_id)
         report = types.SimpleNamespace(CLASS_NAMES=entry["class_names"],
                                        REPORT_EXCLUDE_CLASSES=tuple(entry["report_exclude"]))
         splits = {}
-        for split, list_path in entry["test_lists"].items():
+        lists = ({entry["selection_split"]: entry["val_list"]} if args.selection
+                 else entry["test_lists"])
+        for split, list_path in lists.items():
+            images = [] if args.per_image else None
             scores = evaluate(model, build_loader(config, entry, list_path, args.num_workers),
                               device, entry["num_classes"], ignore_index=int(config.IGNORE_INDEX),
                               amp=bool(config.EVAL_AMP), window=entry["eval_window"],
-                              stride=entry["eval_stride"], projection=membership)
+                              stride=entry["eval_stride"], projection=membership, per_image=images)
+            if images is not None:
+                per_image[f"per_image_{dataset_id}_{split}.npz"] = images
             metrics = serialize_scores(scores, report)
             metrics["fine_confusion"] = {
                 "rows": list(entry["class_names"]), "columns": list(config.FINE_CLASS_NAMES),
@@ -374,8 +412,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     resolved = config_snapshot(config)
     result = {
         "schema_version": 1,
-        "evaluation_kind": "unified_test",
-        "selection_eligible": False,
+        "evaluation_kind": "unified_selection" if args.selection else "unified_test",
+        "selection_eligible": bool(args.selection),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "taxonomy": {"id": config.UNIFIED_TAXONOMY_ID, "version": config.UNIFIED_TAXONOMY_VERSION,
                      "status": config.UNIFIED_TAXONOMY_STATUS,
@@ -400,6 +438,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     text = "\n\n".join(texts)
     write_artifacts(output, result, text)
+    for name, images in per_image.items():
+        np.savez_compressed(output / name, names=np.array([image for image, _ in images]),
+                            confusion=np.stack([matrix for _, matrix in images]).astype(np.uint32))
     result["output_dir"] = str(output)
     print(text)
     print(f"[unified-eval] checkpoint sha256={checkpoint['sha256']}")
