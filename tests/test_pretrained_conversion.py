@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Key conversion of the MiT, MobileNetV3, PIDNet and DeiT ImageNet releases.
+"""Key conversion of the MiT, MobileNetV3, PIDNet and DeiT ImageNet releases,
+and the reader of darknet's Darknet-53 weight files.
 
 Where a reference implementation is installed (timm, HF transformers), the
 converted weights must reproduce its features numerically; this proves the
 key layout, the fused key/value projection and the block order rather than
 only matching names and shapes.
 """
+import dataclasses
+import hashlib
+import struct
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import torch
 import torch.nn as nn
@@ -16,8 +23,10 @@ from common import pretrained
 from common.models import build_model
 from common.models.mobilenetv3 import MobileNetV3Backbone
 from common.models.segformer import MixVisionTransformer, SEGFORMER_VARIANTS
-from common.pretrained import (apply_pretrained, convert_hf_mit, convert_pidnet_official,
-                               convert_timm_deit, convert_timm_mobilenetv3)
+from common.models.yolov3 import Darknet53, darknet53_layout
+from common.pretrained import (DARKNET53_CLASSIFIER, apply_pretrained, convert_hf_mit,
+                               convert_pidnet_official, convert_timm_deit,
+                               convert_timm_mobilenetv3, read_darknet53)
 
 try:
     import timm
@@ -219,6 +228,81 @@ class DeiTConversionTest(unittest.TestCase):
         self.assertEqual(report["loaded_tensors"], 150)
         self.assertEqual(report["dropped_tensors"], 2)
         torch.testing.assert_close(model.decode_head.cls_emb, decoder_before)
+
+
+def _write_darknet(path, state, layers, header=(0, 2, 0), seen=12345):
+    """Write ``state`` in darknet's .weights layout (the inverse of the reader)."""
+    major, minor, revision = header
+    with open(path, "wb") as handle:
+        handle.write(struct.pack("<3i", major, minor, revision))
+        handle.write(struct.pack("<q" if major * 10 + minor >= 2 else "<i", seen))
+        for prefix, _, _, _, batch_norm in layers:
+            names = (("bn.bias", "bn.weight", "bn.running_mean", "bn.running_var", "conv.weight")
+                     if batch_norm else ("bias", "weight"))
+            for name in names:
+                handle.write(state[f"{prefix}.{name}"].numpy().astype("<f4").tobytes())
+
+
+class DarknetReaderTest(unittest.TestCase):
+    """The darknet format has no names: every value is placed by layer order alone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        torch.manual_seed(0)
+        self.layers = [(*layer, True) for layer in darknet53_layout()]
+        self.state = {k: torch.randn(v.shape) for k, v in Darknet53().state_dict().items()
+                      if not k.endswith("num_batches_tracked")}
+        self.path = Path(self.tmp.name) / "darknet53.conv.74"
+
+    def test_round_trip_of_the_backbone(self):
+        _write_darknet(self.path, self.state, self.layers)
+        self.assertEqual(self.path.stat().st_size, 20 + 4 * 40_620_640)  # the released size
+        loaded = read_darknet53(self.path)
+        self.assertEqual(set(loaded), set(self.state))
+        for key, value in self.state.items():
+            self.assertTrue(torch.equal(loaded[key], value), key)
+
+    def test_classifier_tail_is_read_and_dropped(self):
+        self.state["fc.weight"] = torch.randn(1000, 1024, 1, 1)
+        self.state["fc.bias"] = torch.randn(1000)
+        _write_darknet(self.path, self.state, self.layers + [DARKNET53_CLASSIFIER])
+        loaded = read_darknet53(self.path)
+        self.assertTrue(torch.equal(loaded["fc.weight"], self.state["fc.weight"]))
+        self.assertTrue(torch.equal(loaded["fc.bias"], self.state["fc.bias"]))
+        sha = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        spec = dataclasses.replace(pretrained.REGISTRY["darknet53.imagenet"], sha256=sha)
+        with mock.patch.dict(pretrained.REGISTRY, {"darknet53.imagenet": spec}):
+            model = build_model(_cfg(MODEL_NAME="yolov3"))
+            report = apply_pretrained(model, "darknet53.imagenet", self.tmp.name)
+        self.assertEqual((report["loaded_tensors"], report["dropped_tensors"]), (260, 2))
+        torch.testing.assert_close(model.backbone.stages[4].blocks[3].conv2.bn.running_var,
+                                   self.state["stages.4.blocks.3.conv2.bn.running_var"])
+
+    def test_old_header_with_32_bit_seen(self):
+        _write_darknet(self.path, self.state, self.layers, header=(0, 1, 0))
+        loaded = read_darknet53(self.path)
+        self.assertTrue(torch.equal(loaded["stem.conv1.conv.weight"],
+                                    self.state["stem.conv1.conv.weight"]))
+
+    def test_files_of_another_length_are_refused(self):
+        _write_darknet(self.path, self.state, self.layers)
+        with open(self.path, "ab") as handle:
+            handle.write(b"\0\0\0\0")
+        with self.assertRaisesRegex(ValueError, "40620641 个权重值"):
+            read_darknet53(self.path)
+
+    def test_real_checkpoint_fills_the_backbone(self):
+        path = _file("darknet53.imagenet")
+        if path is None:
+            self.skipTest("darknet53.conv.74 not downloaded")
+        model = build_model(_cfg(MODEL_NAME="yolov3"))
+        head_before = model.head.classifier.weight.detach().clone()
+        report = apply_pretrained(model, "darknet53.imagenet")
+        self.assertEqual((report["loaded_tensors"], report["dropped_tensors"]), (260, 0))
+        self.assertTrue(torch.equal(model.head.classifier.weight, head_before))
+        variances = [b for n, b in model.backbone.named_buffers() if n.endswith("running_var")]
+        self.assertTrue(all(bool((v > 0).all()) for v in variances))
 
 
 if __name__ == "__main__":

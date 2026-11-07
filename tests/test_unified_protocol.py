@@ -362,6 +362,11 @@ class UnifiedConfigTest(UnifiedCopies):
         for key in ("LR", "WEIGHT_DECAY", "POLY_POWER", "BACKBONE_LR_MULT", "NO_DECAY_BN_BIAS"):
             self.assertEqual(getattr(b2, key), getattr(swin, key), key)
             self.assertEqual(getattr(b2, key), getattr(segmenter, key), key)
+        yolo, deeplab = self.unified("yolov3_in1k"), self.unified("deeplabv3plus_r50")
+        for key in ("LR", "WEIGHT_DECAY", "POLY_POWER", "WARMUP_ITERS", "CLIP_GRAD",
+                    "BACKBONE_LR_MULT", "NO_DECAY_BN_BIAS", "DEEP_SUP_WEIGHTS", "LOSS_NAME"):
+            self.assertEqual(getattr(yolo, key), getattr(unet, key), key)
+            self.assertEqual(getattr(yolo, key), getattr(deeplab, key), key)
         self.assertEqual(swin.DEEP_SUP_WEIGHTS, (1.0, 0.4))
         self.assertEqual(self.unified("deeplabv3plus_r50").DEEPLAB_BACKBONE, "resnet50")
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-11-07：加入 YOLOv3（YOLO 系列）
+
+导师要求在九种模型之外加入 YOLO 系列，从能复现成分割模型的最基础 YOLO 论文开始。YOLOv1 用全连接层输出固定的
+7×7 网格，YOLOv2 只有步长 32 的输出，都要另设计解码器；YOLOv3（Redmon & Farhadi, arXiv:1804.02767）是第一个
+在步长 8 上输出、带多尺度路径的版本。模型与读取器代码和开发仓库 `land_cover_v4dev` 的提交 `e81fe1f` 相同。
+
+- 新模型 `yolov3`（`common/models/yolov3.py`）和配置 `config_unified_yolov3_in1k`（键 `yolov3_in1k`，55.59M），
+  权重 `darknet53.imagenet`。现在是 10 种模型、11 个配置。按官方 `cfg/yolov3.cfg` 逐层实现 Darknet-53 和颈部；
+  步长 8 的输出层每格输出细类分数，代替每个 anchor 的框、objectness 和类别；只预测框的步长 32、16 输出分支去掉；
+  logits 双线性上采样，用集合交叉熵训练。保留 darknet 的 LeakyReLU 0.1、BN eps 1e-5 和 momentum 0.01、
+  最近邻上采样和新层初始化。darknet 权重要求 [0,1] 的 RGB，模型在第一个卷积前还原数据归一化。
+- `common/pretrained.py`：`PretrainedSpec.reader` 用于非 torch 格式的权重；`read_darknet_weights` /
+  `read_darknet53` 读取 darknet 的 `.weights`（按层序存数值、没有键名，长度不符就报错）。`darknet53.imagenet`
+  是 `darknet53.conv.74`，作者为训练 YOLOv3 提供的 ImageNet Darknet-53（SHA256 2495c269…），
+  与 `darknet53.weights` 不是同一次训练，官方 COCO 权重由它而来。
+- 它进入默认队列，排在 DeepLabV3+ 之前（单步训练 47 对 50 ms）。优化参数与三个 R50 配置相同
+  （AdamW 1e-4，weight decay 0.01，poly 0.9），是暂定值。没有新增配置键，其他 10 个配置的指纹不变。
+
+验证结果：
+
+- 测试：205 个通过，1 个跳过（未安装 transformers 时 MiT 与 HF 的数值对照），其中 14 个是新增的；10 个已有配置的协议指纹与上一次提交 `72c0920` 相同。
+- 用官方 COCO 权重装进同一组模块检测 darknet 的 `data/dog.jpg`：416 输入 dog 99%、bicycle 99%、truck 91%，
+  608 输入 100%、99%、93%；作者网页给出 99%、99%、93%。骨干与 timm `darknet53`（斜率改为 0.1）逐位一致；
+  作者的 ImageNet 分类权重经新读取器把 `data/eagle.jpg` 判为 bald eagle。
+- 本仓库与开发仓库的 YOLOv3 配置协议指纹相同，开发仓库 `unified_v2_s42` 训练出的 checkpoint 可以在这里评估。
+- 开发仓库里的冒烟（选择划分，不读 test）：统一协议 4k 次迭代时均值 0.482。这不是成绩。
+- 没有验证：正式训练 2026-11-07 在开发仓库启动，尚未结束；评估工具没有在真实 test 上运行。
+
 ## 2026-11-02：PIDNet 在 Potsdam 上的边界目标和按数据集平均的边界感知损失
 
 对应审查项 C1 和 P6。只有 PIDNet 的配置变化，其他配置的指纹不变。已记录的 PIDNet 分数都是修复前的，PIDNet 还没有重训。

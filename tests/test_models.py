@@ -10,6 +10,7 @@ from common.models import build_model
 from common.models.mobilenetv3 import MobileNetV3Backbone
 from common.models.resnet import ResNetBackbone
 from common.models.segmenter import POS_GRID, resize_pos_embed
+from common.models.yolov3 import IMAGENET_MEAN, IMAGENET_STD
 
 
 def _cfg(**kwargs):
@@ -185,6 +186,101 @@ class SegmenterModelTest(unittest.TestCase):
             self.assertIn(id(parameter), no_decay)
         self.assertNotIn(id(model.backbone.blocks[0].attn.qkv.weight), no_decay)
         self.assertNotIn(id(model.decode_head.proj_patch), no_decay)
+
+
+class YOLOv3ModelTest(unittest.TestCase):
+    def test_outputs_loss_and_gradients(self):
+        model = build_model(_cfg(MODEL_NAME="yolov3")).train()
+        outputs = model(torch.randn(2, 3, 64, 64))
+        self.assertEqual(len(outputs), 1)
+        self.assertEqual(tuple(outputs[0].shape), (2, 6, 64, 64))
+        target = torch.randint(0, 6, (2, 64, 64))
+        target[:, :4] = 255
+        loss = SegLoss(ignore_index=255, dice_weight=0.0, deep_sup_weights=(1.0,))(outputs, target)
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+        for name, parameter in model.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+
+    def test_set_cross_entropy_accepts_the_logits(self):
+        model = build_model(_cfg(MODEL_NAME="yolov3")).train()
+        membership = [[1, 1, 0, 0, 0, 0], [0, 0, 1, 1, 1, 1]]
+        loss = SegLoss(ignore_index=255, dice_weight=0.0, deep_sup_weights=(1.0,),
+                       set_membership=membership)(
+            model(torch.randn(2, 3, 64, 64)), torch.randint(0, 2, (2, 64, 64)))
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+
+    def test_full_resolution_logits_for_awkward_sizes(self):
+        model = build_model(_cfg(MODEL_NAME="yolov3")).eval()
+        for size in ((64, 96), (70, 90), (33, 129), (8, 8)):
+            with torch.inference_mode():
+                logits = primary_logits(model(torch.zeros(1, 3, *size)))
+            self.assertEqual(tuple(logits.shape), (1, 6, *size))
+
+    def test_logits_come_from_the_stride_8_grid(self):
+        model = build_model(_cfg(MODEL_NAME="yolov3")).eval()
+        shapes = []
+        model.head.classifier.register_forward_hook(lambda m, i, o: shapes.append(tuple(o.shape)))
+        with torch.inference_mode():
+            model(torch.zeros(1, 3, 64, 96))
+            model(torch.zeros(1, 3, 100, 100))  # padded to 128, like 1000 -> 1024 on Potsdam
+        self.assertEqual(shapes, [(1, 6, 8, 12), (1, 6, 16, 16)])
+
+    def test_padding_is_the_mean_colour_and_cropped_away(self):
+        model = build_model(_cfg(MODEL_NAME="yolov3")).eval()
+        x = torch.randn(1, 3, 40, 52)
+        with torch.inference_mode():
+            padded = primary_logits(model(torch.nn.functional.pad(x, (0, 12, 0, 24))))
+            direct = primary_logits(model(x))
+        self.assertTrue(torch.equal(direct, padded[..., :40, :52]))
+
+    def test_backbone_sees_rgb_in_unit_range(self):
+        """The darknet weights expect [0, 1] RGB; the pipeline feeds (rgb - mean) / std."""
+        model = build_model(_cfg(MODEL_NAME="yolov3", MEAN=IMAGENET_MEAN, STD=IMAGENET_STD)).eval()
+        seen = []
+        model.backbone.register_forward_pre_hook(lambda m, args: seen.append(args[0]))
+        rgb = torch.rand(1, 3, 40, 64)
+        mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
+        std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1)
+        with torch.inference_mode():
+            model((rgb - mean) / std)
+        self.assertEqual(tuple(seen[0].shape), (1, 3, 64, 64))
+        torch.testing.assert_close(seen[0][..., :40, :], rgb, rtol=0, atol=1e-6)
+        torch.testing.assert_close(seen[0][..., 40:, :], mean.expand(1, 3, 24, 64))
+        with self.assertRaisesRegex(ValueError, "MEAN/STD"):
+            build_model(_cfg(MODEL_NAME="yolov3", IN_CHANNELS=4))
+
+    def test_layers_and_size_match_yolov3_cfg(self):
+        model = build_model(_cfg(MODEL_NAME="yolov3"))
+        convs = [m for m in model.modules() if isinstance(m, torch.nn.Conv2d)]
+        # yolov3.cfg has 75 convolutions; the box branches 80-81 and 92-93 are absent.
+        self.assertEqual(len(convs), 71)
+        self.assertEqual(_count(model.backbone), 40_584_928)  # = timm darknet53 without classifier
+        # yolov3.cfg: 61,949,149 parameters, of which layers 80-81, 92-93 and the
+        # 255-channel layer 105 hold 6,359,037; layer 105 here has 257 per class.
+        self.assertEqual(_count(model), 61_949_149 - 6_359_037 + 257 * 6)
+        for module in model.modules():
+            if isinstance(module, torch.nn.LeakyReLU):
+                self.assertEqual(module.negative_slope, 0.1)
+            elif isinstance(module, torch.nn.BatchNorm2d):
+                self.assertEqual((module.eps, module.momentum), (1e-5, 0.01))
+        spec = model.pretrained_spec()
+        self.assertEqual((spec["arch"], spec["allowed_missing"]), ("darknet53", ()))
+        self.assertIs(spec["module"], model.backbone)
+
+    def test_batchnorm_and_biases_skip_weight_decay(self):
+        model = build_model(_cfg(MODEL_NAME="yolov3"))
+        optimizer = build_optimizer(model, SimpleNamespace(
+            LR=1e-4, WEIGHT_DECAY=0.01, NO_DECAY_BN_BIAS=True, BACKBONE_LR_MULT=1.0
+        ))
+        no_decay = {id(p) for g in optimizer.param_groups if g["weight_decay"] == 0.0
+                    for p in g["params"]}
+        for parameter in (model.backbone.stem.conv1.bn.weight, model.neck.block3[4].bn.bias,
+                          model.head.classifier.bias):
+            self.assertIn(id(parameter), no_decay)
+        for parameter in (model.backbone.stem.conv1.conv.weight, model.head.classifier.weight):
+            self.assertNotIn(id(parameter), no_decay)
 
 
 if __name__ == "__main__":

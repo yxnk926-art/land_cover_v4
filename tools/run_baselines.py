@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Train the unified fine-class models sequentially, with isolated artifacts.
 
-Without ``--models`` all ten leaves run, fastest first.  ``LAND_COVER_UNIFIED_DATASETS``
+Without ``--models`` all eleven leaves run, fastest first.  ``LAND_COVER_UNIFIED_DATASETS``
 narrows the training datasets.
 
 This launcher only reads existing leaf configurations.  Training owns the final

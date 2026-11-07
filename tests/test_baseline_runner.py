@@ -26,10 +26,10 @@ class BaselineRunnerTest(UnifiedCopies):
                         log_path=root / "launcher" / f"{plan.model}.log",
                         lists=(train_list, val_list)) for plan in plans]
 
-    def test_default_queue_is_all_ten_leaves_fastest_first(self):
+    def test_default_queue_is_all_eleven_leaves_fastest_first(self):
         args = runner.build_parser().parse_args(["--run-tag", "t"])
         self.assertIsNone(args.models)
-        self.assertEqual(len(up.MODEL_CONFIGS), 10)
+        self.assertEqual(len(up.MODEL_CONFIGS), 11)
         self.assertEqual(list(up.MODEL_CONFIGS)[:2], ["ddrnet", "mobilenetv3_lraspp_in1k"])
         self.assertEqual(list(up.MODEL_CONFIGS)[-1], "swin_upernet")
         with mock.patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):

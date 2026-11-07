@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Numerical equivalence of the self-contained backbones with their references.
 
-ResNet-50 is checked against torchvision, and Swin-T and DeiT-S against timm, on
-shared random weights, which proves both the computation and the checkpoint key
-layout without needing any downloaded file.
+ResNet-50 is checked against torchvision, and Swin-T, DeiT-S and Darknet-53
+against timm, on shared random weights, which proves both the computation and
+the checkpoint key layout without needing any downloaded file.
 """
 import unittest
 
@@ -12,6 +12,7 @@ import torch
 from common.models.resnet import ResNetBackbone
 from common.models.segmenter import VisionTransformer
 from common.models.swin import SwinTransformer
+from common.models.yolov3 import Darknet53
 
 try:
     import torchvision
@@ -119,6 +120,34 @@ class VisionTransformerTest(unittest.TestCase):
             actual, grid = model(x)
         self.assertEqual(grid, (14, 14))
         torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
+
+
+class Darknet53Test(unittest.TestCase):
+    @unittest.skipIf(timm is None, "timm is not installed")
+    def test_matches_timm_darknet53(self):
+        """Same names and computation; only timm's LeakyReLU slope (0.01) differs from darknet's."""
+        torch.manual_seed(0)
+        reference = timm.create_model("darknet53", pretrained=False, num_classes=0).eval()
+        for module in reference.modules():
+            if isinstance(module, torch.nn.LeakyReLU):
+                module.negative_slope = 0.1
+            elif isinstance(module, torch.nn.BatchNorm2d):  # non-trivial statistics
+                module.running_mean.uniform_(-0.5, 0.5)
+                module.running_var.uniform_(0.5, 2.0)
+        model = Darknet53().eval()
+        model.load_state_dict(reference.state_dict(), strict=True)
+        x = torch.randn(2, 3, 96, 128)
+        with torch.inference_mode():
+            h = reference.stem(x)
+            expected = []
+            for stage in reference.stages:
+                h = stage(h)
+                expected.append(h)
+            actual = model(x)
+        self.assertEqual([tuple(a.shape[1:]) for a in actual],
+                         [(256, 12, 16), (512, 6, 8), (1024, 3, 4)])
+        for e, a in zip(expected[2:], actual):
+            torch.testing.assert_close(a, e, rtol=1e-4, atol=1e-4)
 
 
 if __name__ == "__main__":

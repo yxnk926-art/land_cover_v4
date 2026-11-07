@@ -1,7 +1,7 @@
 # 统一细类 v2 与联合训练协议
 
 > 状态：细类体系 v2 已于 2026-10-30 定稿（`configs/class_maps/unified_fine_v2.json`，`status: final`），取代 v1；
-> 9 个配置的正式训练 `unified_v2_s42` 于同日在开发仓库 `land_cover_v4dev` 启动，后来加入的 Segmenter-S/16 于 2026-11-01 以同一 run-tag 和种子补入这一轮。细类文件为 `final` 时才允许
+> 9 个配置的正式训练 `unified_v2_s42` 于同日在开发仓库 `land_cover_v4dev` 启动，后来加入的 Segmenter-S/16 于 2026-11-01、YOLOv3 于 2026-11-07 以同一 run-tag 和种子补入这一轮。细类文件为 `final` 时才允许
 > `--run-tag` 正式训练和批量启动器，草案只能冒烟、试跑和 dry-run。
 
 ## 做法
@@ -228,12 +228,12 @@ DDRNet-23-slim，种子和学习率曲线与 v1 相同，只跑 20 万次中的�
 | `common/unified_taxonomy.py` | 读入并检查细类文件，生成集合矩阵 M_d；`python -m common.unified_taxonomy` 打印上面的表格 |
 | `common/unified_protocol.py` | 模型登记表、单个数据集的配置条目、标签偏移与集合矩阵、联合验证与打印 |
 | `configs/config_unified_v4.py` | 基础配置：协议、准备副本表、配方、训练长度 |
-| `configs/config_unified_<model>.py` | 10 个 leaf，每个配置一个 |
+| `configs/config_unified_<model>.py` | 11 个 leaf，每个配置一个 |
 | `common/engine.py` | `SetCrossEntropyLoss`；`evaluate(..., projection=M_d)` 按集合求和评估并输出 `fine_confusion` |
 | `common/dataset.py` | `LabelOffsetDataset`、`BalancedEpochSampler`、`build_unified_dataloaders()` |
 | `common/train.py` | 统一细类协议的数据、验证、指纹与 best checkpoint；细类文件不是 `final` 时拒绝 `--run-tag` |
 | `tools/evaluate_unified.py` | 在各数据集 test 划分上按原生类别做最终评估 |
-| `tools/run_baselines.py` | 按顺序批量训练，默认 10 个配置由快到慢 |
+| `tools/run_baselines.py` | 按顺序批量训练，默认 11 个配置由快到慢 |
 
 ## 命令
 
@@ -248,7 +248,7 @@ $PY -m common.unified_taxonomy
 # 看批量训练计划
 $PY tools/run_baselines.py --run-tag <tag> --seed 42 --dry-run
 
-# 正式训练：单个模型 / 其中几个 / 全部 10 个配置（由快到慢）
+# 正式训练：单个模型 / 其中几个 / 全部 11 个配置（由快到慢）
 $PY common/train.py --config config_unified_unet_r50 --run-tag <tag> --seed 42
 $PY tools/run_baselines.py --run-tag <tag> --seed 42 --models ddrnet unet_r50
 $PY tools/run_baselines.py --run-tag <tag> --seed 42

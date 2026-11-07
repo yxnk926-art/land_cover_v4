@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""九种模型的统一工厂。
+"""十种模型的统一工厂。
 
 ``unet_resnet``、``unetpp_resnet``、``deeplabv3plus``+``DEEPLAB_BACKBONE``、
-``segformer``、``swin_upernet``、``segmenter``、``mobilenetv3_lraspp``、``pidnet`` 和 ``ddrnet``。
+``segformer``、``swin_upernet``、``segmenter``、``mobilenetv3_lraspp``、``pidnet``、``ddrnet``
+和 ``yolov3``（YOLO 系列）。
 SegFormer 用 ``SEGFORMER_VARIANT`` 选 B0 或 B2。
 """
 
@@ -65,6 +66,16 @@ def build_model(cfg):
             drop_path_rate=getattr(cfg, "DROP_PATH_RATE", 0.1),
         )
 
+    if name == "yolov3":
+        from .yolov3 import IMAGENET_MEAN, IMAGENET_STD, YOLOv3Seg
+        return YOLOv3Seg(
+            num_classes=cfg.NUM_CLASSES,
+            in_channels=getattr(cfg, "IN_CHANNELS", 3),
+            # The model undoes the data normalisation: darknet weights expect [0, 1] RGB.
+            mean=getattr(cfg, "MEAN", IMAGENET_MEAN),
+            std=getattr(cfg, "STD", IMAGENET_STD),
+        )
+
     if name == "ddrnet":
         from .ddrnet import DDRNet
         return DDRNet(
@@ -110,6 +121,6 @@ def build_model(cfg):
 
     choices = (
         "unet_resnet, unetpp_resnet, deeplabv3plus, segformer, swin_upernet, segmenter, "
-        "mobilenetv3_lraspp, pidnet, ddrnet"
+        "mobilenetv3_lraspp, pidnet, ddrnet, yolov3"
     )
     raise ValueError(f"未知 MODEL_NAME: {name!r}（可选: {choices}）")

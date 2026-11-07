@@ -20,15 +20,23 @@ Checkpoints whose naming differs from the repository modules carry a
 ``convert`` function.  It runs after the classifier tensors are dropped, maps
 every remaining source key exactly once and raises on any key it does not
 recognise, so a changed release cannot be half-loaded silently.
+
+Files that are not torch checkpoints carry a ``reader`` (path -> state).  The
+darknet ``.weights`` format stores no names, only the values of each layer in
+network order, so its reader names them from the architecture and refuses a
+file whose length does not match it exactly.
 """
 from dataclasses import dataclass
 from pathlib import Path
 import os
 import re
+import struct
 
+import numpy as np
 import torch
 
 from common.models.segmenter import POS_GRID, resize_pos_embed
+from common.models.yolov3 import darknet53_layout
 from common.native_datasets import sha256_file
 
 
@@ -43,6 +51,7 @@ class PretrainedSpec:
     drop_suffixes: tuple = ()  # derived buffers that the model recomputes
     source: str = ""
     convert: object = None     # state -> state in repository naming (see below)
+    reader: object = None      # path -> state for non-torch files (default: torch.load)
 
 
 # ---------------------------------------------------------------- key conversion
@@ -203,6 +212,66 @@ def convert_timm_deit(state):
     return out
 
 
+# ---------------------------------------------------------------- darknet files
+def _darknet_values(layers):
+    return sum(out * (4 if batch_norm else 1) + out * cin * k * k
+               for _, cin, out, k, batch_norm in layers)
+
+
+def read_darknet_weights(path, layers, optional_tail=()):
+    """Darknet ``.weights`` -> state dict, given the convolutions in file order.
+
+    ``layers`` holds (prefix, in, out, kernel, batch_norm).  The header is three
+    int32 (major, minor, revision) and ``seen`` (int64 from version 0.2, else
+    int32), as in darknet's ``load_weights_upto``.  Each convolution then stores
+    float32 values: with batch norm the BN bias, scale, running mean and running
+    variance, without it the conv bias; then the (out, in, k, k) kernel.  The
+    file must end after ``layers``, or after ``layers + optional_tail``.
+    """
+    raw = Path(path).read_bytes()
+    major, minor, _ = struct.unpack_from("<3i", raw)
+    offset = 20 if major * 10 + minor >= 2 and major < 1000 and minor < 1000 else 16
+    values = np.frombuffer(raw, dtype="<f4", offset=offset)
+    layers = list(layers)
+    if values.size != _darknet_values(layers):
+        if optional_tail and values.size == _darknet_values(layers + list(optional_tail)):
+            layers += list(optional_tail)
+        else:
+            expected = [_darknet_values(layers)]
+            if optional_tail:
+                expected.append(_darknet_values(layers + list(optional_tail)))
+            raise ValueError(f"{path} 有 {values.size} 个权重值，与网络不符（应为 "
+                             f"{' 或 '.join(map(str, expected))}）")
+    state, position = {}, 0
+
+    def take(*shape):
+        nonlocal position
+        count = int(np.prod(shape))
+        tensor = torch.from_numpy(values[position:position + count].reshape(shape).copy())
+        position += count
+        return tensor
+
+    for prefix, cin, out, k, batch_norm in layers:
+        if batch_norm:
+            for name in ("bn.bias", "bn.weight", "bn.running_mean", "bn.running_var"):
+                state[f"{prefix}.{name}"] = take(out)
+            state[f"{prefix}.conv.weight"] = take(out, cin, k, k)
+        else:
+            state[f"{prefix}.bias"] = take(out)
+            state[f"{prefix}.weight"] = take(out, cin, k, k)
+    return state
+
+
+# The 1x1 classifier after global average pooling in darknet53.cfg.
+DARKNET53_CLASSIFIER = ("fc", 1024, 1000, 1, False)
+
+
+def read_darknet53(path):
+    """``darknet53.conv.74`` (the 52 convolutions) or ``darknet53.weights`` (plus ``fc``)."""
+    layers = [(*layer, True) for layer in darknet53_layout()]
+    return read_darknet_weights(path, layers, optional_tail=(DARKNET53_CLASSIFIER,))
+
+
 REGISTRY = {spec.name: spec for spec in (
     PretrainedSpec(
         name="resnet50.tv_in1k",
@@ -287,6 +356,19 @@ REGISTRY = {spec.name: spec for spec in (
         source="timm (Facebook DeiT-S ImageNet-1k release)",
         convert=convert_timm_deit,
     ),
+    PretrainedSpec(
+        name="darknet53.imagenet",
+        arch="darknet53",
+        filename="darknet53.conv.74",
+        url="https://pjreddie.com/media/files/darknet53.conv.74",
+        sha256="2495c2690283e4e0bc2050cbd4660b77a8074e14e9c11150c6412fd63db496a7",
+        drop_prefixes=("fc.",),
+        # The 52 convolutions of an ImageNet Darknet-53 that the authors distribute for
+        # training YOLOv3.  Not the same run as darknet53.weights (kernels uncorrelated);
+        # the released COCO yolov3.weights descends from this file.
+        source="Redmon & Farhadi, YOLOv3 training instructions (pjreddie.com/darknet/yolo)",
+        reader=read_darknet53,
+    ),
 )}
 
 
@@ -354,7 +436,7 @@ def apply_pretrained(model, name, directory=None):
     module = target["module"]
     allowed_missing = tuple(target.get("allowed_missing", ()))
 
-    state = load_checkpoint_state(path)
+    state = (spec.reader or load_checkpoint_state)(path)
     dropped = [key for key in state if key.startswith(spec.drop_prefixes)]
     derived = [key for key in state if key.endswith(spec.drop_suffixes)
                and not key.startswith(spec.drop_prefixes)]
